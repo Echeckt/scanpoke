@@ -273,23 +273,45 @@ function plafondPreuve(photos) {
   return { plafond: v, note: v, manques, best, netMoy: Math.round(netMoy) };
 }
 
+/* Lit le rapport même si la réponse a été coupée en cours de route :
+   on referme alors les accolades et crochets restés ouverts.        */
 function extraireJSON(txt) {
-  const net = txt.replace(/```json/g, "").replace(/```/g, "").trim();
+  const net = String(txt || "").replace(/```json/gi, "").replace(/```/g, "").trim();
   const i = net.indexOf("{");
   if (i < 0) return null;
+  const src = net.slice(i);
+
   let prof = 0, chaine = false, esc = false;
-  for (let k = i; k < net.length; k++) {
-    const ch = net[k];
+  for (let k = 0; k < src.length; k++) {
+    const ch = src[k];
     if (esc) { esc = false; continue; }
     if (ch === "\\") { esc = true; continue; }
     if (ch === '"') { chaine = !chaine; continue; }
     if (chaine) continue;
     if (ch === "{") prof++;
     else if (ch === "}" && --prof === 0) {
-      try { return JSON.parse(net.slice(i, k + 1)); } catch { return null; }
+      try { return JSON.parse(src.slice(0, k + 1)); } catch { break; }
     }
   }
-  return null;
+
+  const pile = [];
+  chaine = false; esc = false;
+  for (let k = 0; k < src.length; k++) {
+    const ch = src[k];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === '"') { chaine = !chaine; continue; }
+    if (chaine) continue;
+    if (ch === "{" || ch === "[") pile.push(ch);
+    else if (ch === "}" || ch === "]") pile.pop();
+  }
+
+  let rep = src;
+  if (chaine) rep += '"';
+  rep = rep.replace(/,\s*$/, "").replace(/,\s*"[^"]*"\s*:?\s*$/, "");
+  while (pile.length) rep += pile.pop() === "{" ? "}" : "]";
+
+  try { return JSON.parse(rep); } catch { return null; }
 }
 
 const COULEURS = {
@@ -459,7 +481,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. Chaque chaîne fai
 
       const corps = {
         model: "claude-sonnet-4-6",
-        max_tokens: 1400,
+        max_tokens: 4000,
         messages: [{
           role: "user",
           content: [
@@ -477,10 +499,11 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. Chaque chaîne fai
       if (!rep.ok) throw new Error(data.erreur || data.error?.message || `Analyse indisponible (${rep.status}).`);
 
       const texte = (data.content || []).map((b) => (b.type === "text" ? b.text : "")).filter(Boolean).join("\n");
+      if (!texte.trim()) throw new Error(`Réponse vide (arrêt : ${data.stop_reason || "inconnu"}).`);
+
       const j = extraireJSON(texte);
-      if (!j) throw new Error(approfondi
-        ? "Rapport incomplet. Décochez la vérification catalogue et relancez."
-        : "Rapport illisible. Relancez l'analyse.");
+      if (!j) throw new Error(`Rapport illisible. Début reçu : ${texte.slice(0, 220)}`);
+      if (data.stop_reason === "max_tokens") log("Réponse coupée, rapport reconstitué", "ok");
       log("Rapport reçu", "ok");
 
       const confBrute = Math.max(0, Math.min(100, Number(j.confiance) || 0));
