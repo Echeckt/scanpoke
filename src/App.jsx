@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
+import { trouverProfilReference } from "./referenceProfiles.js";
 
 /* ────────────────────────────────────────────────────────────────
    CONTRÔLE D'AUTHENTICITÉ — cartes Pokémon TCG
@@ -990,6 +991,60 @@ function fusionnerControles(modele, locaux) {
   return [...l, ...m].slice(0, 8);
 }
 
+/* ── base de références certifiées ─────────────────────────────
+   Les références sont chargées uniquement lorsqu'un tirage exact est reconnu.
+   C'est volontairement une deuxième passe : la première identifie la carte ;
+   la seconde la compare à plusieurs exemplaires authentifiés du même tirage. */
+function blobVersBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || "").split(",")[1] || "");
+    r.onerror = () => reject(new Error("Lecture d'une référence impossible."));
+    r.readAsDataURL(blob);
+  });
+}
+
+async function chargerReferenceBase64(url) {
+  const r = await fetch(`/api/reference-image?url=${encodeURIComponent(url)}`);
+  if (!r.ok) {
+    let detail = "";
+    try { detail = (await r.json())?.erreur || ""; } catch {}
+    throw new Error(detail || `Référence indisponible (${r.status}).`);
+  }
+  return blobVersBase64(await r.blob());
+}
+
+function nettoyerControlesPourReference(modele, controlesReference) {
+  const refs = Array.isArray(controlesReference) ? controlesReference : [];
+  let m = Array.isArray(modele) ? modele : [];
+  if (!refs.length) return m;
+
+  // Une comparaison au tirage exact remplace les jugements génériques sur
+  // couleur/géométrie du dos ou du recto. Les contrôles physiques non vus dans
+  // les références (tranche, texture au toucher...) restent conservés.
+  m = m.filter((c) => {
+    const crit = `${c?.zone || ""} ${c?.critere || ""}`.toLowerCase();
+    return !/color|couleur|saturation|teinte|geometr|bordure|placement|proportion|dos|back/.test(crit);
+  });
+  return [...refs, ...m].slice(0, 8);
+}
+
+function resumeProfilReference(match) {
+  if (!match?.profil) return null;
+  const p = match.profil;
+  return {
+    id: p.id,
+    title: p.title,
+    status: p.status,
+    authority: [...new Set((p.references || []).map((r) => r.authority))].join(" + ") || "—",
+    referenceCount: (p.references || []).length,
+    certs: (p.references || []).map((r) => ({ cert: r.cert, grade: r.grade, certUrl: r.certUrl })),
+    canonicalSource: p.canonicalSource || "",
+    matchScore: match.score,
+    matchReasons: match.raisons || [],
+  };
+}
+
 /* ── calibration ───────────────────────────────────────────────
    Un outil qui ne se confronte jamais au réel ne fait que produire
    des avis. Dès qu'une carte est confirmée vraie ou fausse — par un
@@ -1553,9 +1608,10 @@ Règles strictes :
 - "famille_dos" : japonaise_old|japonaise_moderne|internationale|non_visible. Ne déduis jamais chinois vs européen depuis le dos international.
 - "edition_dos" reste un champ de compatibilité : japonaise si famille_dos commence par japonaise_, internationale si famille_dos=internationale, sinon non_visible.
 - "epoque" : année ou intervalle court utile pour valider le dos et la finition.
+- "variante_tirage" : variante d’impression précise si visible (ex. "No Rarity Symbol", "1st Edition", "Unlimited", "Gold Star"). Pour les cartes japonaises 1996, vérifie explicitement la présence ou l’absence du symbole de rareté.
 
 Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maximum. Chaînes limitées à 110 caractères, sauf "resume" et "observation" jusqu'à 280. Le "resume" tient en deux ou trois phrases :
-{"identification":{"carte":"","extension":"","numero":"","langue":"","marche":"japonais|chinois|europeen|autre|indetermine","variante_marche":"","epoque":"","famille_dos":"japonaise_old|japonaise_moderne|internationale|non_visible","edition_dos":"japonaise|internationale|non_visible","coherence":"coherent|incoherent|indetermine","note":""},
+{"identification":{"carte":"","extension":"","numero":"","langue":"","marche":"japonais|chinois|europeen|autre|indetermine","variante_marche":"","variante_tirage":"","epoque":"","famille_dos":"japonaise_old|japonaise_moderne|internationale|non_visible","edition_dos":"japonaise|internationale|non_visible","coherence":"coherent|incoherent|indetermine","note":""},
 "controles":[{"zone":"","critere":"","categorie":"reproductible|difficile|contextuel","gravite":"faible|forte|redhibitoire","observation":"","verdict":"conforme|suspect|non_verifiable"}],
 "drapeaux":[""],"positifs":[""],
 "confiance":0,
@@ -1645,22 +1701,150 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
 
       log(`Profil ${marcheAnalyse === "japonais" ? "🇯🇵 japonais" : marcheAnalyse === "chinois" ? "🇨🇳 chinois" : marcheAnalyse === "europeen" ? "🇪🇺 européen/international" : "🌍 " + marcheAnalyse} · ${familleAnalyse}`, "ok");
 
-      // Les mesures locales sont fusionnées APRÈS l'identification régionale.
-      // Un seuil international ne peut donc plus condamner un Japanese Old Back.
-      const controlesLocaux = controlesDosDeterministes(retenues, j.identification);
-      j.controles = fusionnerControles(j.controles, controlesLocaux);
-      const redhibitoireLocal = controlesLocaux.some((c) => c.gravite === "redhibitoire");
-      const anomalieForteLocale = controlesLocaux.some((c) => c.gravite === "forte");
+      /* ── V1.6 : le tirage exact prime sur les règles génériques ── */
+      const matchReference = trouverProfilReference(j.identification);
+      const profilReference = matchReference?.profil?.status === "active" && matchReference.profil.references?.length >= 3
+        ? matchReference.profil : null;
+      let auditReference = null;
+      let controlesLocaux = [];
+      let controlesReference = [];
+      let tokensReference = { entree: 0, sortie: 0 };
 
-      if (controlesLocaux.length) {
-        const d = controlesLocaux[0];
-        j.drapeaux = [d.observation, ...(Array.isArray(j.drapeaux) ? j.drapeaux : [])].filter(Boolean).slice(0, 6);
-      }
-      if (redhibitoireLocal) {
-        j.resume = `Le dos déclenche le garde-fou colorimétrique local : ${controlesLocaux[0].observation} Cette anomalie est traitée comme rédhibitoire et ne dépend pas de l'interprétation du modèle.`;
+      if (matchReference?.profil) {
+        const pRef = matchReference.profil;
+        j.identification.profil_reference = pRef.id;
+        j.identification.profil_reference_score = matchReference.score;
+
+        if (profilReference) {
+          // La base verrouille les métadonnées qui définissent le tirage. Cela
+          // corrige notamment les confusions EX Deoxys / Dragon Frontiers.
+          j.identification.extension_detectee = j.identification.extension || "";
+          j.identification.numero_detecte = j.identification.numero || "";
+          j.identification.extension = profilReference.set;
+          j.identification.numero = profilReference.number;
+          j.identification.marche = profilReference.market;
+          j.identification.langue = profilReference.language;
+          j.identification.famille_dos = profilReference.backFamily;
+          j.identification.edition_dos = profilReference.backFamily.startsWith("japonaise_") ? "japonaise" : "internationale";
+          j.identification.variante_tirage = profilReference.variant;
+          j.identification.epoque = profilReference.year;
+
+          marcheAnalyse = profilReference.market;
+          familleAnalyse = profilReference.backFamily;
+          setPhotos((liste) => liste.map((p) =>
+            p.sujet !== false && p.role === "verso" && p.editionSource !== "manual"
+              ? { ...p, edition: profilReference.backFamily, editionSource: "auto" }
+              : p
+          ));
+          log(`Base certifiée trouvée · ${profilReference.references.length} références PSA`, "ok");
+          log("Comparaison au tirage exact");
+
+          try {
+            const refsChargees = [];
+            for (const r of profilReference.references.slice(0, 3)) {
+              const [front, back] = await Promise.all([
+                chargerReferenceBase64(r.frontUrl),
+                chargerReferenceBase64(r.backUrl),
+              ]);
+              refsChargees.push({ ...r, front, back });
+            }
+
+            const promptReference = `Tu réalises une SECONDE PASSE d'authentification Pokémon. La carte a déjà été identifiée. Cette fois tu disposes de ${refsChargees.length} EXEMPLAIRES CERTIFIÉS PSA du TIRAGE EXACT, chacun avec recto et verso.
+
+TIRAGE DE RÉFÉRENCE VERROUILLÉ :
+- ${profilReference.title}
+- année : ${profilReference.year}
+- famille de dos : ${profilReference.backFamily}
+- variante : ${profilReference.variant}
+
+ORDRE DES IMAGES : d'abord les ${encodees.length} photos SUJET, puis pour chaque certification PSA : RECTO puis VERSO.
+Certifications : ${refsChargees.map((r) => `PSA ${r.cert} (${r.grade})`).join(" ; ")}.
+
+RÈGLE MAJEURE : ne compare PAS la luminosité RGB brute d'une photo à une autre. Les scanners/téléphones et l'exposition diffèrent. Compare les RELATIONS INTERNES et les structures : ratios de couleurs dans une même image, teintes relatives, position/proportion des éléments, crop de l'illustration, épaisseur des cadres, glyphes, symboles d'énergie, copyright, géométrie du dos, formes du tourbillon/rayons, placement du logo et de la Poké Ball. Ignore complètement le plastique du slab PSA, son label, ses reflets et sa couleur.
+
+Une différence qui apparaît face aux TROIS références authentifiées est beaucoup plus probante qu'une règle générique. À l'inverse, si les trois références elles-mêmes varient sur un détail, ce détail ne doit jamais être déclaré faux. L'usure d'un PSA 5/7/8/9 peut modifier les bords et la surface : ne la confonds pas avec une différence d'impression.
+
+GRAVITÉ :
+- faible : petit écart compatible avec angle, exposition, usure ou compression ;
+- forte : écart net avec les 3 références, mais photo encore imparfaite ;
+- redhibitoire : caractéristique d'impression/géométrie impossible sur ce tirage et clairement visible. N'utilise redhibitoire pour la couleur que si l'écart RELATIF est massif face aux 3 références et que les neutres/autres encres du sujet restent cohérents.
+
+Réponds uniquement en JSON :
+{"correspondance":"forte|moyenne|faible|incompatible","confiance_reference":0,"resume_reference":"","controles":[{"zone":"","critere":"","categorie":"difficile","gravite":"faible|forte|redhibitoire","observation":"","verdict":"conforme|suspect|non_verifiable"}]}
+4 contrôles maximum, observations factuelles. Une conformité avec les références rend la carte COMPATIBLE avec une authentique, jamais certifiée authentique.`;
+
+            const contenuRef = [
+              { type: "text", text: "PHOTOS DU SUJET À TESTER" },
+              ...encodees.map((b64) => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } })),
+              { type: "text", text: "RÉFÉRENCES AUTHENTIFIÉES DU MÊME TIRAGE" },
+            ];
+            for (const r of refsChargees) {
+              contenuRef.push({ type: "text", text: `PSA ${r.cert} · ${r.grade} · recto puis verso` });
+              contenuRef.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: r.front } });
+              contenuRef.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: r.back } });
+            }
+            contenuRef.push({ type: "text", text: promptReference });
+
+            const repRef = await fetch("/api/analyse", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: "claude-sonnet-4-6",
+                max_tokens: 2200,
+                messages: [{ role: "user", content: contenuRef }],
+              }),
+            });
+            const dataRef = await repRef.json();
+            if (!repRef.ok) throw new Error(dataRef.erreur || dataRef.error?.message || `Comparaison indisponible (${repRef.status}).`);
+            const texteRef = (dataRef.content || []).map((b) => b.type === "text" ? b.text : "").filter(Boolean).join("\n");
+            auditReference = extraireJSON(texteRef);
+            if (!auditReference) throw new Error("Réponse de comparaison illisible.");
+
+            controlesReference = (Array.isArray(auditReference.controles) ? auditReference.controles : []).map((c) => ({
+              ...c,
+              categorie: "difficile",
+              source: "base_reference_certifiee",
+            }));
+            j.controles = nettoyerControlesPourReference(j.controles, controlesReference);
+            if (auditReference.resume_reference) {
+              j.resume = `Comparaison à ${profilReference.references.length} références PSA du même tirage : ${auditReference.resume_reference}`;
+            }
+            tokensReference = {
+              entree: dataRef.usage?.input_tokens || 0,
+              sortie: dataRef.usage?.output_tokens || 0,
+            };
+            log(`Comparaison certifiée terminée · ${auditReference.correspondance || "rapport prêt"}`, "ok");
+          } catch (e) {
+            auditReference = { erreur: e.message };
+            log("Références certifiées indisponibles · repli sur les garde-fous locaux");
+          }
+        } else {
+          log("Tirage connu · références certifiées encore en préparation");
+        }
       }
 
-      log(controlesLocaux.length ? "Rapport prêt · contrôle local du dos appliqué" : "Rapport prêt", "ok");
+      // Sans comparaison certifiée exploitable, on conserve les garde-fous
+      // régionaux de V1.5. Une base exacte disponible les remplace.
+      if (!profilReference || !controlesReference.length) {
+        controlesLocaux = controlesDosDeterministes(retenues, j.identification);
+        j.controles = fusionnerControles(j.controles, controlesLocaux);
+      }
+
+      const controlesDeterminants = controlesReference.length ? controlesReference : controlesLocaux;
+      const redhibitoireLocal = controlesDeterminants.some((c) => c.gravite === "redhibitoire" && c.verdict === "suspect");
+      const anomalieForteLocale = controlesDeterminants.some((c) => c.gravite === "forte" && c.verdict === "suspect");
+
+      if (controlesDeterminants.length) {
+        const d = controlesDeterminants.find((c) => c.verdict === "suspect") || controlesDeterminants[0];
+        if (d?.verdict === "suspect") {
+          j.drapeaux = [d.observation, ...(Array.isArray(j.drapeaux) ? j.drapeaux : [])].filter(Boolean).slice(0, 6);
+        }
+      }
+      if (redhibitoireLocal && !controlesReference.length) {
+        j.resume = `Le dos déclenche le garde-fou colorimétrique local : ${controlesLocaux[0]?.observation || "anomalie rédhibitoire"} Cette anomalie est traitée comme rédhibitoire et ne dépend pas de l'interprétation du modèle.`;
+      }
+
+      log(controlesReference.length ? "Rapport prêt · base authentifiée appliquée" : controlesLocaux.length ? "Rapport prêt · contrôle local appliqué" : "Rapport prêt", "ok");
 
       const confBrute = Math.max(0, Math.min(100, Number(j.confiance) || 0));
       let conf = Math.min(confBrute, preuve.plafond);
@@ -1685,8 +1869,8 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
       }\n\nDes photos nettes, à plat, hors pochette et sans reflet direct suffisent. Merci beaucoup !`;
 
       const tokens = {
-        entree: data.usage?.input_tokens || 0,
-        sortie: data.usage?.output_tokens || 0,
+        entree: (data.usage?.input_tokens || 0) + (tokensReference.entree || 0),
+        sortie: (data.usage?.output_tokens || 0) + (tokensReference.sortie || 0),
       };
 
       const rapport = {
@@ -1698,6 +1882,9 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
         anomalieForteLocale,
         plafonneFauteDeProbant: note.plafonneFauteDeProbant,
         avecReference: retenuesRef.length > 0,
+        avecBaseReference: !!profilReference && controlesReference.length > 0,
+        referenceProfile: resumeProfilReference(matchReference),
+        auditReference,
       };
       setResultat(rapport);
 
@@ -1972,7 +2159,9 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                     )}
                     {res.redhibitoireLocal && (
                       <p className="ap-meta" style={{ color: "var(--red)", marginTop: 7 }}>
-                        Garde-fou local déclenché : anomalie du dos selon le profil régional détecté.
+                        {res.avecBaseReference
+                          ? "Écart rédhibitoire confirmé face aux références certifiées du même tirage."
+                          : "Garde-fou local déclenché : anomalie selon le profil régional détecté."}
                       </p>
                     )}
                   </div>
@@ -1992,6 +2181,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                       </div>
                       <div className="ap-meta" style={{ marginTop: 4 }}>
                         {res.identification.extension || "extension inconnue"} · n° {res.identification.numero || "—"} · {res.identification.langue || "—"}
+                        {res.identification.variante_tirage ? <> · {res.identification.variante_tirage}</> : null}
                         {res.identification.epoque ? <> · {res.identification.epoque}</> : null}
                       </div>
                       <div style={{ marginTop: 7, fontSize: 13.5, fontWeight: 600 }}>
@@ -2010,6 +2200,50 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                           Incohérence régionale : {libelleMarche(res.identification)} ne correspond pas à
                           {` ${libelleFamilleDos(res.identification)}`}. Vérifiez qu'il s'agit bien de la même carte ;
                           une combinaison région / époque / dos impossible est rédhibitoire.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {res.referenceProfile && (
+                  <div className="ap-carte-corps" style={{ paddingTop: 0 }}>
+                    <div className="ap-groupe" style={{ padding: "13px 15px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <div>
+                          <div className="ap-titre-sec" style={{ marginBottom: 5 }}>Base de référence</div>
+                          <div style={{ fontSize: 14.5, fontWeight: 650 }}>{res.referenceProfile.title}</div>
+                        </div>
+                        <span className="ap-cat" style={{
+                          color: res.avecBaseReference ? "var(--green)" : "var(--orange)",
+                          background: res.avecBaseReference
+                            ? "color-mix(in srgb, var(--green) 14%, transparent)"
+                            : "color-mix(in srgb, var(--orange) 14%, transparent)",
+                        }}>
+                          {res.avecBaseReference ? `${res.referenceProfile.referenceCount} certifiées` : "profil préparé"}
+                        </span>
+                      </div>
+                      {res.avecBaseReference ? (
+                        <>
+                          <div className="ap-meta" style={{ marginTop: 8 }}>
+                            Comparaison effectuée contre {res.referenceProfile.referenceCount} exemplaires {res.referenceProfile.authority}
+                            du même tirage · correspondance d'identité {res.referenceProfile.matchScore}/100.
+                          </div>
+                          {res.auditReference?.correspondance && (
+                            <div style={{ marginTop: 8, fontSize: 13.5, fontWeight: 600 }}>
+                              Correspondance visuelle : {res.auditReference.correspondance}
+                              {Number.isFinite(Number(res.auditReference.confiance_reference))
+                                ? ` · confiance ${Number(res.auditReference.confiance_reference)} %` : ""}
+                            </div>
+                          )}
+                          <div className="ap-meta" style={{ marginTop: 7 }}>
+                            Certificats : {res.referenceProfile.certs.map((c) => `${c.cert} (${c.grade})`).join(" · ")}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="ap-meta" style={{ marginTop: 8 }}>
+                          Ce tirage est déjà identifié dans la base, mais il n'a pas encore 3 références visuelles certifiées validées.
+                          L'analyse utilise donc encore les règles génériques.
                         </div>
                       )}
                     </div>

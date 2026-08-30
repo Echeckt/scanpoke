@@ -1,68 +1,72 @@
-# Contrôle d'authenticité — cartes Pokémon
+# Faux ou authentique — V1.6 · base de références certifiées
 
-Colle le lien d'une annonce Vinted, le site récupère titre, prix et photos,
-mesure ce que les images permettent réellement de vérifier, puis rend un
-rapport d'authenticité.
+Cette version remplace progressivement les seuils génériques par une comparaison au **tirage exact**.
 
-## Mise en ligne
+## Ce qui change
 
-1. Envoie ce dossier dans un dépôt GitHub.
-2. Sur vercel.com : **Add New → Project**, choisis le dépôt, **Deploy**.
-3. **Settings → Environment Variables** : ajoute `ANTHROPIC_API_KEY`
-   avec ta clé de console.anthropic.com.
-4. **Deployments → Redeploy** pour que la clé soit prise en compte.
+- La première passe identifie la carte : nom, numéro, set, marché, langue, famille de dos et variante d'impression.
+- L'identité est comparée à `src/referenceProfiles.js`.
+- Lorsqu'un profil `active` est trouvé, l'application charge **3 exemplaires certifiés PSA** (recto + verso) via `/api/reference-image.js`.
+- Une deuxième passe Claude compare les photos du sujet aux 3 références du **même tirage**.
+- Les contrôles colorimétriques/géométriques génériques sont alors remplacés par les contrôles issus de la base certifiée.
+- Si les références ne sont pas accessibles, l'application retombe automatiquement sur les garde-fous V1.5.
+- L'interface affiche le profil utilisé, le nombre de références, les certificats et la correspondance visuelle.
 
-## La clé ne va JAMAIS dans le dépôt
+## Profils actifs dans ce pilote
 
-Le dépôt est public : une clé écrite dans un fichier serait lue et dépensée
-en quelques minutes. Elle ne vit que dans les variables Vercel.
+### Rayquaza ☆ 107/107 · EX Deoxys · anglais
+3 scans PSA recto/verso :
+- PSA 53934211 — MINT 9
+- PSA 67477272 — NM-MT 8
+- PSA 73204806 — NM 7
 
-## Ce qui va casser de temps en temps
+Le profil verrouille notamment **EX Deoxys** : un modèle qui identifierait par erreur le Gold Star 107/107 comme EX Dragon Frontiers est corrigé avant le verdict final.
 
-Vinted filtre les requêtes venant d'un hébergeur. Le bouton « Lire » renverra
-parfois une erreur — c'est normal, pas une panne. Le dépôt de photos manuel
-reste disponible juste en dessous et fonctionne toujours.
+### リザードン No.006 · Japanese Basic · No Rarity Symbol
+3 scans PSA recto/verso :
+- PSA 99040038 — NM-MT 8
+- PSA 76281909 — NM-MT 8
+- PSA 91829633 — EX 5
 
-## Coût
+Ce profil exige que la première passe voie explicitement la variante **No Rarity Symbol**. Il n'est donc pas appliqué aveuglément à tous les Dracaufeu japonais No.006.
 
-Chaque analyse consomme quelques centimes d'API. Sur un site public, ce sont
-des inconnus qui les dépensent. Pense à fixer une limite mensuelle dans la
-console Anthropic.
+## Profils préparés, mais pas encore actifs
 
-## Correctif V1.1 — détection du dos
+La structure contient aussi les identités de :
+- Charizard 4/102 Base Set EN Unlimited
+- Shining Charizard 107/105 Neo Destiny EN
+- Charizard Gold Star 100/101 EX Dragon Frontiers EN
+- Umbreon Gold Star 17/17 POP Series 5 EN
+- Mewtwo Gold Star 103/110 EX Holon Phantoms EN
+- Lugia 9/111 Neo Genesis EN
+- Umbreon VMAX 215/203 Evolving Skies EN
+- Umbreon VMAX 173/132 CS4aC chinois simplifié
 
-- La balance des blancs n'utilise plus aveuglément le pourtour d'une photo colorée.
-- Un dos Pokémon centré est reconnu avant la logique « macro ».
-- Les mesures du bleu du dos (saturation, teinte, luminosité) sont transmises à l'analyse.
-- Les anomalies ont maintenant une gravité : faible, forte ou rédhibitoire.
-- Une contradiction rédhibitoire ne peut plus être compensée par des détails faciles à copier.
+Ils sont `queued` : **aucun verdict n'utilise leurs références tant que 3 exemplaires certifiés n'ont pas été ajoutés**.
 
-## v1.2 — garde-fou colorimétrique local
-- Le score ne dépend plus du fait que le modèle pense à reporter le bleu délavé dans `controles`.
-- Mesure relative bleu vs rouge Poké Ball / jaune du logo dans la même photo.
-- Si le bleu est très faible alors que rouge/jaune restent francs et que le blanc central reste neutre, un contrôle local rédhibitoire est injecté.
-- Une anomalie locale rédhibitoire force le score d'authenticité à 0/100 et un plancher de confiance de 92% pour ce défaut précis.
+## Pourquoi les images ne sont pas copiées dans le ZIP
 
-## v1.3 — ROI du dos + seuil relatif robuste
-- Le bleu du dos est maintenant mesuré dans une zone reconstruite à partir du motif bleu lui-même, au lieu d'un détourage global pollué par la main ou le décor.
-- Le garde-fou compare le bleu aux encres jaune/rouge dans cette même zone et utilise aussi le ratio bleu/référence.
-- Le cas de régression Rayquaza (bleu ~42–43 % alors que les autres encres restent nettement plus saturées) déclenche désormais une anomalie rédhibitoire.
-- Le garde-fou peut reconnaître un dos par sa signature visuelle même si son rôle a été mal sélectionné dans l'interface.
+Les URLs des scans de certification sont stockées comme provenance, mais les images restent hébergées chez leur source. `/api/reference-image.js` les charge à la demande depuis un hôte explicitement autorisé. Cela évite de redistribuer une photothèque tierce dans le projet et permet de retirer/remplacer facilement une référence.
 
-## v1.4 — profils régionaux Japon / Chine / Europe
-- Détection régionale avant le verdict : 🇯🇵 japonais, 🇨🇳 chinois, 🇪🇺 européen/international latin, ou autre/indéterminé.
-- Le recto détermine le marché ; un dos international ne peut jamais distinguer chinois et européen à lui seul.
-- Trois familles de dos : japonais Old Back (1996–juil. 2001), japonais moderne, international.
-- Le garde-fou colorimétrique V1.3 n'est plus universel : il ne s'applique qu'au profil de dos international. Un vrai Old Back japonais ne peut donc plus être condamné par les seuils du Rayquaza international.
-- Le prompt adapte désormais catalogue, holo, texture, colorimétrie, mise en page et cohérence à la carte précise et à son marché.
-- Ajout d'un sélecteur « Profil régional » laissé sur détection automatique par défaut, avec possibilité de forcer Japon / Chine / Europe en cas de besoin.
-- Les conseils physiques ont été rendus dépendants du tirage : aucune texture ou plage de poids n'est présentée comme universelle.
+## Sécurité importante
 
-## v1.5 — vraie détection automatique multi-photo
-- Correction d'un défaut de la V1.4 : la famille du verso n'est plus traitée comme une information indépendante de la carte.
-- Détection locale conservatrice du **Japanese Old Back** dès l'import, basée sur la géométrie/répartition des grands rayons blancs et du champ bleu dans la ROI du dos. Ce détecteur identifie une famille de dos, pas l'authenticité.
-- Le moteur recoupe désormais toutes les photos marquées **Sujet** comme une seule carte : le marché lu sur le recto (Japon / Chine / Europe) est propagé au verso.
-- Si le recto est japonais et que le verso n'est pas Old Back, le profil devient **Japonais moderne** ; si le recto est chinois ou européen, le verso utilise le profil **international**.
-- Un Old Back reconnu localement force le profil d'analyse vers **Japonais vintage** même si le modèle hésite sur le marché.
-- Les sélections automatiques peuvent être remplacées manuellement ; une sélection manuelle n'est jamais écrasée par la synchronisation.
-- Important : la langue/pays ne doit pas être déduit du verso international seul. Chinois et européen restent distingués par le recto.
+Une certification connue ne suffit pas si le numéro de certification a été cloné sur une fausse slab. La base doit donc conserver plusieurs références indépendantes et peut retirer immédiatement une référence signalée/deactivated. Ne jamais construire un profil à partir d'une seule annonce marketplace.
+
+## Déploiement
+
+Même configuration que la V1.5 :
+
+```bash
+npm install
+npm run dev
+```
+
+Variable Vercel requise : `ANTHROPIC_API_KEY`.
+
+## Ajouter un profil actif
+
+Dans `src/referenceProfiles.js` :
+1. verrouiller nom/set/numéro/langue/marché/variante ;
+2. ajouter au moins 3 certifications indépendantes ;
+3. fournir `frontUrl`, `backUrl` et `certUrl` ;
+4. passer `status` de `queued` à `active` seulement après contrôle manuel des 3 dossiers.
