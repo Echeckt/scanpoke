@@ -991,6 +991,70 @@ function fusionnerControles(modele, locaux) {
   return [...l, ...m].slice(0, 8);
 }
 
+
+/* ── aveux explicites dans l'annonce ───────────────────────────
+   La qualité des PHOTOS ne doit jamais plafonner une preuve textuelle
+   indépendante. Si le vendeur dit lui-même que la carte est une reproduction,
+   on peut conclure « non officielle » même avec des photos médiocres.
+   On reste volontairement strict : seules des formulations explicites sont
+   prises en compte, pas un prix bas ou un vocabulaire vague. */
+function controleAveuNonOfficiel(annonce = {}) {
+  const brut = `${annonce.titre || ""}\n${annonce.texte || ""}`;
+  const t = brut.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const motifs = [
+    /\bnot\s+official\b/,
+    /\bunofficial\b/,
+    /\breplica\b/,
+    /\breproduction\b/,
+    /\bproxy\s+card\b/,
+    /\bfan[ -]?made\b/,
+    /\bnon\s+officielle?\b/,
+    /\breplique\b/,
+    /\bcarte\s+proxy\b/,
+  ];
+  const trouve = motifs.find((r) => r.test(t));
+  if (!trouve) return null;
+  const extrait = (brut.match(new RegExp(trouve.source, "i")) || ["reproduction non officielle"])[0];
+  return {
+    zone: "annonce",
+    critere: "statut déclaré par le vendeur",
+    categorie: "contextuel",
+    gravite: "redhibitoire",
+    observation: `Le vendeur indique explicitement « ${extrait} ». La carte proposée est donc déclarée non officielle.`,
+    verdict: "suspect",
+    source: "annonce_deterministe",
+    preuve_independante_photo: true,
+  };
+}
+
+
+function canonicaliserExtensionRapport(j, detectee, canonique) {
+  const from = String(detectee || "").trim();
+  const to = String(canonique || "").trim();
+  if (!from || !to || from.toLowerCase() === to.toLowerCase()) return;
+  const esc = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(esc, "gi");
+  const remplace = (v) => typeof v === "string" ? v.replace(re, to) : v;
+  if (j.identification) j.identification.note = remplace(j.identification.note);
+  j.resume = remplace(j.resume);
+  if (Array.isArray(j.drapeaux)) j.drapeaux = j.drapeaux.map(remplace);
+  if (Array.isArray(j.positifs)) j.positifs = j.positifs.map(remplace);
+  if (Array.isArray(j.questions)) j.questions = j.questions.map(remplace);
+  if (Array.isArray(j.controles)) {
+    j.controles = j.controles.map((c) => ({ ...c, zone: remplace(c.zone), critere: remplace(c.critere), observation: remplace(c.observation) }));
+  }
+}
+
+function retirerEstimationsPrixNonVerifiees(j, rechercheWebActive) {
+  if (rechercheWebActive) return;
+  const parlePrix = (v) => /\b(prix|price|valeur\s+(?:reelle|marche)|market\s+value|€|eur|usd|\$)\b/i.test(String(v || ""));
+  if (Array.isArray(j.controles)) {
+    j.controles = j.controles.filter((c) => !parlePrix(`${c.zone || ""} ${c.critere || ""} ${c.observation || ""}`));
+  }
+  if (Array.isArray(j.drapeaux)) j.drapeaux = j.drapeaux.filter((v) => !parlePrix(v));
+  if (Array.isArray(j.positifs)) j.positifs = j.positifs.filter((v) => !parlePrix(v));
+}
+
 /* ── base de références certifiées ─────────────────────────────
    Les références sont chargées uniquement lorsqu'un tirage exact est reconnu.
    C'est volontairement une deuxième passe : la première identifie la carte ;
@@ -1597,7 +1661,7 @@ Méthode :
 6. SURFACE / HOLO / TEXTURE : uniquement ce qui est attendu pour la carte précise. Une vintage japonaise authentique peut être lisse ; l'absence de texture moderne n'est donc pas un défaut. ("difficile")
 7. USURE ET GÉOMÉTRIE : cohérence avec l'âge, coupe et bordures ; géométrie seulement si le biais photo le permet. ("difficile")
 8. TEXTE ET MISE EN PAGE : compare chaque valeur réellement lisible au tirage de CE marché. Un chiffre, symbole, caractère ou coût d'énergie impossible est reproductible mais rédhibitoire.
-9. ANNONCE : prix vs marché, vocabulaire, photos reprises d'ailleurs. ("contextuel")
+9. ANNONCE : vocabulaire, aveux explicites, photos reprises d'ailleurs. ("contextuel") Le prix n'est jamais une preuve d'authenticité. Si la recherche web n'est pas activée, N'INVENTE AUCUNE valeur de marché et ne crée aucun drapeau fondé sur le prix. Si elle est activée, le prix reste un simple contexte, jamais rédhibitoire.
 
 Règles strictes :
 - N'invente jamais un indice que tu ne peux pas voir. "non_verifiable" est un verdict honorable et attendu — mais seulement pour ce qui est vraiment illisible, pas comme option par défaut par excès de prudence. Si tu peux lire un chiffre, un symbole ou un mot dans l'image, lis-le et compare-le à ce que tu sais, même si la carte est plastifiée, dans une pochette, ou photographiée à une résolution modeste.
@@ -1701,7 +1765,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
 
       log(`Profil ${marcheAnalyse === "japonais" ? "🇯🇵 japonais" : marcheAnalyse === "chinois" ? "🇨🇳 chinois" : marcheAnalyse === "europeen" ? "🇪🇺 européen/international" : "🌍 " + marcheAnalyse} · ${familleAnalyse}`, "ok");
 
-      /* ── V1.6 : le tirage exact prime sur les règles génériques ── */
+      /* ── V1.7 : le tirage exact prime sur les règles génériques ── */
       const matchReference = trouverProfilReference(j.identification);
       const profilReference = matchReference?.profil?.status === "active" && matchReference.profil.references?.length >= 3
         ? matchReference.profil : null;
@@ -1728,6 +1792,8 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
           j.identification.edition_dos = profilReference.backFamily.startsWith("japonaise_") ? "japonaise" : "internationale";
           j.identification.variante_tirage = profilReference.variant;
           j.identification.epoque = profilReference.year;
+          j.identification.coherence = "coherent";
+          j.identification.note = `Identité verrouillée par la base certifiée : ${profilReference.title}.`;
 
           marcheAnalyse = profilReference.market;
           familleAnalyse = profilReference.backFamily;
@@ -1761,6 +1827,8 @@ ORDRE DES IMAGES : d'abord les ${encodees.length} photos SUJET, puis pour chaque
 Certifications : ${refsChargees.map((r) => `PSA ${r.cert} (${r.grade})`).join(" ; ")}.
 
 RÈGLE MAJEURE : ne compare PAS la luminosité RGB brute d'une photo à une autre. Les scanners/téléphones et l'exposition diffèrent. Compare les RELATIONS INTERNES et les structures : ratios de couleurs dans une même image, teintes relatives, position/proportion des éléments, crop de l'illustration, épaisseur des cadres, glyphes, symboles d'énergie, copyright, géométrie du dos, formes du tourbillon/rayons, placement du logo et de la Poké Ball. Ignore complètement le plastique du slab PSA, son label, ses reflets et sa couleur.
+
+IMPORTANT : une FORTE RESSEMBLANCE à une image PSA prouve surtout que le BON MODÈLE / TIRAGE a été copié. Une contrefaçon haut de gamme peut reproduire parfaitement artwork, texte, symboles et mise en page. Une conformité statique aux références ne doit donc JAMAIS, à elle seule, faire monter l'authenticité. En revanche, une différence nette et répétée face aux TROIS références peut condamner la carte.
 
 Une différence qui apparaît face aux TROIS références authentifiées est beaucoup plus probante qu'une règle générique. À l'inverse, si les trois références elles-mêmes varient sur un détail, ce détail ne doit jamais être déclaré faux. L'usure d'un PSA 5/7/8/9 peut modifier les bords et la surface : ne la confonds pas avec une différence d'impression.
 
@@ -1802,7 +1870,10 @@ Réponds uniquement en JSON :
 
             controlesReference = (Array.isArray(auditReference.controles) ? auditReference.controles : []).map((c) => ({
               ...c,
-              categorie: "difficile",
+              // Asymétrie volontaire : ressembler à un scan PSA est copiable et
+              // ne rapporte aucun crédit d'authenticité. Un ÉCART net, lui, reste
+              // un signal difficile et peut faire baisser le score.
+              categorie: c?.verdict === "suspect" ? "difficile" : "reproductible",
               source: "base_reference_certifiee",
             }));
             j.controles = nettoyerControlesPourReference(j.controles, controlesReference);
@@ -1813,7 +1884,7 @@ Réponds uniquement en JSON :
               entree: dataRef.usage?.input_tokens || 0,
               sortie: dataRef.usage?.output_tokens || 0,
             };
-            log(`Comparaison certifiée terminée · ${auditReference.correspondance || "rapport prêt"}`, "ok");
+            log(`Comparaison aux références terminée · ${auditReference.correspondance || "rapport prêt"}`, "ok");
           } catch (e) {
             auditReference = { erreur: e.message };
             log("Références certifiées indisponibles · repli sur les garde-fous locaux");
@@ -1844,10 +1915,27 @@ Réponds uniquement en JSON :
         j.resume = `Le dos déclenche le garde-fou colorimétrique local : ${controlesLocaux[0]?.observation || "anomalie rédhibitoire"} Cette anomalie est traitée comme rédhibitoire et ne dépend pas de l'interprétation du modèle.`;
       }
 
+      if (profilReference) {
+        canonicaliserExtensionRapport(j, j.identification.extension_detectee, profilReference.set);
+      }
+      retirerEstimationsPrixNonVerifiees(j, approfondi);
+
+      // Une déclaration explicite « Not Official / replica / reproduction… »
+      // est une preuve indépendante de la qualité des photos.
+      const controleContexte = controleAveuNonOfficiel(annonce);
+      const preuveContextuelleDecisive = !!controleContexte;
+      if (controleContexte) {
+        j.controles = fusionnerControles(j.controles, [controleContexte]);
+        j.drapeaux = [controleContexte.observation, ...(Array.isArray(j.drapeaux) ? j.drapeaux : [])].filter(Boolean).slice(0, 6);
+        j.resume = `${controleContexte.observation} La comparaison aux références PSA confirme seulement que la reproduction copie bien le bon tirage ; une forte ressemblance statique ne certifie jamais l'authenticité physique.`;
+      }
+
       log(controlesReference.length ? "Rapport prêt · base authentifiée appliquée" : controlesLocaux.length ? "Rapport prêt · contrôle local appliqué" : "Rapport prêt", "ok");
 
       const confBrute = Math.max(0, Math.min(100, Number(j.confiance) || 0));
-      let conf = Math.min(confBrute, preuve.plafond);
+      // Le plafond px/mm concerne les preuves VISUELLES. Un aveu explicite du
+      // vendeur est indépendant des pixels et ne doit donc pas être raboté.
+      let conf = preuveContextuelleDecisive ? Math.max(confBrute, 99) : Math.min(confBrute, preuve.plafond);
       // Le plafond lié aux px/mm concerne surtout texte/trame. Une contradiction
       // colorimétrique relative sur des milliers de pixels reste lisible à faible
       // densité ; elle dispose donc de son propre plancher de confiance.
@@ -1880,6 +1968,8 @@ Réponds uniquement en JSON :
         redhibitoire: note.redhibitoire,
         redhibitoireLocal,
         anomalieForteLocale,
+        preuveContextuelleDecisive,
+        plafondPhoto: preuve.plafond,
         plafonneFauteDeProbant: note.plafonneFauteDeProbant,
         avecReference: retenuesRef.length > 0,
         avecBaseReference: !!profilReference && controlesReference.length > 0,
@@ -1909,19 +1999,27 @@ Réponds uniquement en JSON :
       }, ...historique.filter((e) => normaliserUrl(e.url) !== normaliserUrl(annonce.url))].slice(0, MAX_HIST));
 
       if (j.identification?.carte) {
-        log("Vérification du catalogue TCGdex");
-        try {
-          const q = new URLSearchParams({ nom: j.identification.carte });
-          if (j.identification.numero) q.set("numero", j.identification.numero);
-          const langueCatalogue = codeLangueTCGdex(j.identification.langue);
-          if (langueCatalogue) q.set("langue", langueCatalogue);
-          const rc = await fetch(`/api/catalogue?${q.toString()}`);
-          const dc = await rc.json();
-          setCatalogue(dc);
-          log(dc.trouve ? `Trouvée dans ${dc.langues.length} langue(s) au catalogue` : "Introuvable dans le catalogue TCGdex",
-              dc.trouve ? "ok" : "att");
-        } catch {
+        if (profilReference) {
+          // Une identité exacte avec 3 références certifiées est plus spécifique
+          // qu'une recherche textuelle TCGdex, qui peut choisir un homonyme ou
+          // échouer sur les symboles ☆ / noms localisés.
           setCatalogue(null);
+          log("Identité exacte verrouillée · contrôle TCGdex générique ignoré", "ok");
+        } else {
+          log("Vérification du catalogue TCGdex");
+          try {
+            const q = new URLSearchParams({ nom: j.identification.carte });
+            if (j.identification.numero) q.set("numero", String(j.identification.numero).split("/")[0]);
+            const langueCatalogue = codeLangueTCGdex(j.identification.langue);
+            if (langueCatalogue) q.set("langue", langueCatalogue);
+            const rc = await fetch(`/api/catalogue?${q.toString()}`);
+            const dc = await rc.json();
+            setCatalogue(dc);
+            log(dc.trouve ? `Trouvée dans ${dc.langues.length} langue(s) au catalogue` : "Introuvable dans le catalogue TCGdex",
+                dc.trouve ? "ok" : "att");
+          } catch {
+            setCatalogue(null);
+          }
         }
       }
     } catch (e) {
@@ -2154,8 +2252,11 @@ Réponds uniquement en JSON :
                       color: TEINTE[res.verdict],
                     }}>{BADGE[res.verdict]}</span>
                     <h2 className="ap-v-titre">{LIBELLE[res.verdict]}</h2>
-                    {res.confiance < res.confBrute && (
-                      <p className="ap-meta">Confiance abaissée depuis {res.confBrute} % : les photos ne permettent pas d'aller plus loin.</p>
+                    {res.confiance < res.confBrute && !res.preuveContextuelleDecisive && (
+                      <p className="ap-meta">Confiance visuelle abaissée depuis {res.confBrute} % : les photos ne permettent pas d'aller plus loin.</p>
+                    )}
+                    {res.preuveContextuelleDecisive && (
+                      <p className="ap-meta" style={{ color: "var(--red)" }}>Preuve décisive indépendante des photos : déclaration explicite du vendeur.</p>
                     )}
                     {res.redhibitoireLocal && (
                       <p className="ap-meta" style={{ color: "var(--red)", marginTop: 7 }}>
@@ -2227,11 +2328,11 @@ Réponds uniquement en JSON :
                         <>
                           <div className="ap-meta" style={{ marginTop: 8 }}>
                             Comparaison effectuée contre {res.referenceProfile.referenceCount} exemplaires {res.referenceProfile.authority}
-                            du même tirage · correspondance d'identité {res.referenceProfile.matchScore}/100.
+                            du même tirage · identité du modèle {res.referenceProfile.matchScore}/100. Une forte ressemblance confirme le bon modèle, pas l'authenticité physique.
                           </div>
                           {res.auditReference?.correspondance && (
                             <div style={{ marginTop: 8, fontSize: 13.5, fontWeight: 600 }}>
-                              Correspondance visuelle : {res.auditReference.correspondance}
+                              Correspondance au tirage : {res.auditReference.correspondance}
                               {Number.isFinite(Number(res.auditReference.confiance_reference))
                                 ? ` · confiance ${Number(res.auditReference.confiance_reference)} %` : ""}
                             </div>

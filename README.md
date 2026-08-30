@@ -1,4 +1,4 @@
-# Faux ou authentique — V1.6 · base de références certifiées
+# Faux ou authentique — V1.7 · base de références certifiées
 
 Cette version remplace progressivement les seuils génériques par une comparaison au **tirage exact**.
 
@@ -70,3 +70,10 @@ Dans `src/referenceProfiles.js` :
 2. ajouter au moins 3 certifications indépendantes ;
 3. fournir `frontUrl`, `backUrl` et `certUrl` ;
 4. passer `status` de `queued` à `active` seulement après contrôle manuel des 3 dossiers.
+
+
+## V1.7 — séparation identité / authenticité
+- Une ressemblance avec des scans PSA ne donne plus de crédit positif au score : elle confirme surtout le bon modèle/tirage.
+- Les différences répétées face aux références restent des signaux négatifs forts.
+- Les aveux explicites du vendeur (`Not Official`, `replica`, `reproduction`, `proxy`, etc.) sont détectés localement et ne sont plus plafonnés par la qualité des photos.
+- Quand un profil exact à 3 références PSA est trouvé, son identité verrouille extension/numéro/année/note et le lookup TCGdex générique est ignoré pour éviter les contradictions.
