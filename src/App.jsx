@@ -187,6 +187,20 @@ const CSS = `
 .ap-pied{ max-width:1080px; margin:34px auto 0; padding:0 24px; font-size:13px;
   line-height:1.5; color:var(--label3); text-align:center; }
 
+/* ─ sélecteur segmenté ─ */
+.ap-seg{ display:inline-flex; background:var(--fill); border-radius:8px; padding:2px; gap:2px; }
+.ap-seg button{ border:none; background:none; cursor:pointer; font-family:inherit; font-size:12px;
+  font-weight:500; color:var(--label2); padding:4px 10px; border-radius:6px;
+  transition:background .16s, color .16s; }
+.ap-seg button[aria-pressed="true"]{ background:var(--surface); color:var(--label);
+  box-shadow:0 1px 3px rgba(0,0,0,.12); }
+
+/* ─ étiquette de catégorie ─ */
+.ap-cat{ display:inline-block; font-size:10.5px; font-weight:600; letter-spacing:.04em;
+  text-transform:uppercase; padding:2px 7px; border-radius:5px; margin-left:7px;
+  background:var(--fill); color:var(--label3); vertical-align:1px; }
+.ap-cat.probant{ background:color-mix(in srgb,var(--blue) 15%,transparent); color:var(--blue); }
+
 /* ─ avertissement doublon ─ */
 .ap-avert{ max-width:600px; margin:14px auto 0; display:flex; gap:12px; align-items:center;
   background:color-mix(in srgb,var(--orange) 13%,transparent); border-radius:var(--r-m);
@@ -264,12 +278,19 @@ function mesurerImage(img) {
   const fond = bord[Math.floor(bord.length / 2)];
 
   let minX = w, maxX = -1, minY = h, maxY = -1, dedans = 0;
+  let sMin = Infinity, sMax = -Infinity, dMin = Infinity, dMax = -Infinity;
+  const coins = { hg: null, bd: null, bg: null, hd: null };
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++)
       if (Math.abs(L[y * w + x] - fond) > 26) {
         dedans++;
         if (x < minX) minX = x; if (x > maxX) maxX = x;
         if (y < minY) minY = y; if (y > maxY) maxY = y;
+        const su = x + y, di = x - y;
+        if (su < sMin) { sMin = su; coins.hg = [x, y]; }
+        if (su > sMax) { sMax = su; coins.bd = [x, y]; }
+        if (di < dMin) { dMin = di; coins.bg = [x, y]; }
+        if (di > dMax) { dMax = di; coins.hd = [x, y]; }
       }
   const emprise = Math.round((dedans / L.length) * 100);
   const lb = maxX > minX ? maxX - minX + 1 : w;
@@ -304,7 +325,60 @@ function mesurerImage(img) {
   const moy = nb ? base / nb : 1;
   const periodicite = moy > 0 ? Math.round((pic / moy) * 100) / 100 : 0;
 
-  return { natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm, nettete, reflets, bouches, emprise, blocs, periodicite, pasTrame: lagPic };
+  /* ── colorimétrie ──────────────────────────────────────────────
+     Le pourtour de la photo sert d'étalon de lumière : on ramène le
+     fond au neutre avant de mesurer, sinon une lampe chaude suffit à
+     faire passer une carte pour sursaturée. Les presses de 1996 ont
+     un gamut plus étroit que les imprimantes actuelles : une
+     saturation trop haute est un signal de réimpression.          */
+  let br = 0, bgv = 0, bbv = 0, bn = 0;
+  const bord3 = (p) => { const i = p * 4; br += d[i]; bgv += d[i + 1]; bbv += d[i + 2]; bn++; };
+  for (let x = 0; x < w; x += 3) { bord3(x); bord3((h - 1) * w + x); }
+  for (let y = 0; y < h; y += 3) { bord3(y * w); bord3(y * w + w - 1); }
+  const cible = bn ? (br + bgv + bbv) / (3 * bn) : 128;
+  const kr = br > 0 ? cible / (br / bn) : 1;
+  const kg = bgv > 0 ? cible / (bgv / bn) : 1;
+  const kb = bbv > 0 ? cible / (bbv / bn) : 1;
+
+  let sSom = 0, sN = 0, vives = 0;
+  const echSat = [];
+  for (let y = Math.max(0, minY); y <= Math.min(h - 1, maxY); y++)
+    for (let x = Math.max(0, minX); x <= Math.min(w - 1, maxX); x++) {
+      const p = y * w + x;
+      if (Math.abs(L[p] - fond) <= 26) continue;
+      const i = p * 4;
+      const r = d[i] * kr, g = d[i + 1] * kg, b = d[i + 2] * kb;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      if (mx < 12) continue;
+      const sat = (mx - mn) / mx;
+      sSom += sat; sN++;
+      if (sat > 0.8) vives++;
+      if ((sN & 7) === 0) echSat.push(sat);
+    }
+  echSat.sort((a, b) => a - b);
+  const satMoy = sN ? Math.round((sSom / sN) * 1000) / 10 : 0;
+  const satP90 = echSat.length ? Math.round(echSat[Math.floor(echSat.length * 0.9)] * 1000) / 10 : 0;
+  const partVive = sN ? Math.round((vives / sN) * 1000) / 10 : 0;
+
+  /* ── géométrie ─────────────────────────────────────────────────
+     Une photo prise de biais rend le centrage, l'épaisseur de bordure
+     et le crénage inexploitables. On mesure le biais pour interdire
+     ces critères plutôt que de les juger sur une image déformée.  */
+  let biais = 0, ratio = 0;
+  if (coins.hg && coins.hd && coins.bg && coins.bd) {
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    const haut = dist(coins.hg, coins.hd), bas = dist(coins.bg, coins.bd);
+    const gau = dist(coins.hg, coins.bg), dro = dist(coins.hd, coins.bd);
+    if (haut && bas && gau && dro) {
+      biais = Math.round(Math.max(haut / bas, bas / haut, gau / dro, dro / gau) * 100) / 100;
+      ratio = Math.round((Math.min(haut, bas) / Math.max(gau, dro)) * 100) / 100;
+    }
+  }
+
+  return {
+    natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm, nettete, reflets, bouches, emprise, blocs,
+    periodicite, pasTrame: lagPic, satMoy, satP90, partVive, biais, ratio,
+  };
 }
 
 function redimensionner(img, max = 1400, q = 0.85) {
@@ -433,6 +507,57 @@ const dateCourte = (t) =>
   new Date(t).toLocaleDateString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 const milliers = (n) => (n || 0).toLocaleString("fr-FR");
+
+/* ── notation asymétrique ──────────────────────────────────────
+   La leçon d'un cas réel : un bloc de copyright lisible et correct
+   avait fait monter la note. C'est une faute de raisonnement. Les
+   faussaires actuels reproduisent fidèlement le texte, la mise en
+   page, les PV, l'illustrateur, le numéro. Voir ces éléments passer
+   ne prouve rien — c'est le minimum syndical d'une bonne copie.
+   Les voir échouer, en revanche, est accablant.
+
+   D'où la règle : un critère REPRODUCTIBLE ne peut que faire
+   descendre. Seuls les critères DIFFICILES — trame d'impression,
+   couche noire de tranche, physique de l'holographie, gamut de la
+   presse d'époque, texture du carton — peuvent faire monter, et
+   seulement s'ils ont pu être réellement observés.
+
+   Conséquence assumée : une bonne photo d'un faux ne bat plus une
+   mauvaise photo d'une vraie.                                   */
+const POIDS = {
+  reproductible: { credit: 0, charge: 2.6 },
+  difficile:     { credit: 3.2, charge: 3.2 },
+  contextuel:    { credit: 0.8, charge: 1.6 },
+};
+
+function scorer(controles, identification) {
+  const l = Array.isArray(controles) ? controles : [];
+  let credit = 0, charge = 0, probantsVus = 0, reproductiblesVus = 0;
+
+  for (const c of l) {
+    const cat = POIDS[c.categorie] ? c.categorie : "reproductible";
+    const p = POIDS[cat];
+    if (c.verdict === "non_verifiable") continue;
+    if (cat === "difficile") probantsVus++;
+    if (cat === "reproductible") reproductiblesVus++;
+    if (c.verdict === "suspect") charge += p.charge;
+    else if (c.verdict === "conforme") credit += p.credit;
+  }
+
+  let score = 50 + credit * 4.2 - charge * 5.4;
+
+  // Rien de probant observé : on ne peut pas dépasser le doute raisonnable,
+  // quelle que soit la beauté de la photo.
+  if (probantsVus === 0) score = Math.min(score, 58);
+  // Une incohérence catalogue reste rédhibitoire.
+  if (identification?.coherence === "incoherent") score = Math.min(score, 8);
+
+  return {
+    score: Math.max(0, Math.min(100, Math.round(score))),
+    probantsVus, reproductiblesVus,
+    plafonneFauteDeProbant: probantsVus === 0,
+  };
+}
 
 const TEINTE = {
   probablement_authentique: "var(--green)",
@@ -592,48 +717,73 @@ export default function Scanner() {
     const log = (t, k = "att") => setJournal((j) => [...j, { t, k }]);
 
     try {
-      const retenues = [...photos]
+      const sujets = photos.filter((p) => p.sujet !== false);
+      const refs = photos.filter((p) => p.sujet === false);
+      if (!sujets.length) throw new Error("Marquez au moins une photo comme « Sujet ».");
+
+      const triees = [...sujets].sort((a, b) => (PRIORITE[a.role] - PRIORITE[b.role]) || (b.m.pxParMm - a.m.pxParMm));
+      const retenues = triees.slice(0, refs.length ? 3 : 4);
+      const retenuesRef = [...refs]
         .sort((a, b) => (PRIORITE[a.role] - PRIORITE[b.role]) || (b.m.pxParMm - a.m.pxParMm))
-        .slice(0, 3);
+        .slice(0, 2);
+
       log(`Meilleure densité ${preuve.best?.toFixed(1) ?? 0} px/mm`, "ok");
+      if (retenuesRef.length) log(`${retenuesRef.length} photo(s) de référence jointes`, "ok");
+
       const encodees = retenues.map((p) => redimensionner(p.img));
+      const encodeesRef = retenuesRef.map((p) => redimensionner(p.img));
       log(approfondi ? "Vérification du catalogue en ligne" : "Analyse en cours");
 
-      const contexte = retenues.map((p, i) =>
-        `Photo ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | reflets ${p.m.reflets}% | noirs bouchés ${p.m.bouches}% | emprise ${p.m.emprise}% | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)`
-      ).join("\n");
+      const decrire = (p, i, prefixe) =>
+        `${prefixe} ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | biais perspective ${p.m.biais || "n/d"} | reflets ${p.m.reflets}% | saturation moyenne ${p.m.satMoy}% (p90 ${p.m.satP90}%, part très vive ${p.m.partVive}%) | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)`;
+
+      const contexte = retenues.map((p, i) => decrire(p, i, "Photo sujet")).join("\n");
+
+      const refTexte = retenuesRef.length
+        ? `\n\nPHOTOS DE RÉFÉRENCE — l'utilisateur affirme que cette carte-là est authentique. Elles arrivent APRÈS les photos du sujet dans l'ordre des images. Compare le sujet à la référence plutôt que dans l'absolu : c'est bien plus fiable. Attarde-toi sur l'écart de saturation, de teinte, de grain et de comportement holographique. Si la référence est plus vive que le sujet, ce n'est pas un signal négatif pour le sujet.\n${
+            retenuesRef.map((p, i) => decrire(p, i, "Photo référence")).join("\n")
+          }`
+        : "";
 
       const consigne = `Tu es expert en authentification de cartes Pokémon TCG à partir de photos d'annonces de seconde main.
 
-Contexte 2026 : les contrefaçons haut de gamme reproduisent désormais correctement les polices, les motifs holographiques et parfois la texture. Les indices visuels d'il y a cinq ans ne suffisent plus. Le signal le plus discriminant reste la COHÉRENCE CATALOGUE.
+RÈGLE CENTRALE — ASYMÉTRIE DES INDICES.
+En 2026, une contrefaçon de qualité reproduit correctement : le bloc de copyright, la mise en page, les polices à taille normale, les PV, le nom de l'illustrateur, le numéro de collection, le texte des attaques, le dos avec Poké Ball et tourbillon. Constater que ces éléments sont conformes NE PROUVE RIEN — c'est le minimum d'une bonne copie. Les voir échouer est en revanche accablant. Classe-les "reproductible".
+Ce qui reste difficile à falsifier : trame d'impression et rosace CMJN à fort grossissement, couche noire centrale visible sur la tranche, comportement de l'holographie selon l'angle, gamut de la presse d'époque (les presses de 1996 saturent moins que les imprimantes actuelles), texture et grain du carton, tolérances de coupe et de centrage de l'époque, cohérence de l'usure avec l'âge annoncé. Classe-les "difficile".
+Prix, vocabulaire de l'annonce, mise en scène des photos : "contextuel".
 
-Métriques mesurées sur les pixels (elles déterminent ce qui est physiquement vérifiable) :
+NE FAIS JAMAIS MONTER TA CONFIANCE PARCE QU'UN ÉLÉMENT REPRODUCTIBLE EST DEVENU LISIBLE. La lisibilité est une propriété de l'appareil photo, pas de la carte.
+
+Mesures effectuées sur les pixels :
 ${contexte}
 
-Repères de lisibilité : <8 px/mm la carte est à peine distinguable ; 8-15 gros éléments seulement ; 15-30 le texte des attaques devient lisible ; 30-60 micro-typographie et bavures ; >60 trame d'impression analysable.
+Lisibilité : <8 px/mm la carte est à peine distinguable ; 8-15 gros éléments ; 15-30 le texte des attaques ; 30-60 micro-typographie ; >60 trame d'impression.
+Biais de perspective : 1.00 = photo bien à plat. Au-delà de 1.10, le centrage, l'épaisseur de bordure et le crénage sont déformés — marque ces critères "non_verifiable".
+Saturation : mesurée après neutralisation de la lumière ambiante sur le fond de la photo. Une saturation moyenne nettement plus élevée que sur une carte d'époque comparable oriente vers une réimpression récente.${refTexte}
 
 Annonce : titre="${annonce.titre || "non fourni"}" | prix="${annonce.prix || "non fourni"}" | description="${(annonce.texte || "non fournie").slice(0, 700)}"
 
-Méthode, dans cet ordre :
-1. IDENTIFIER : nom, extension, numéro de collection, symbole de rareté, langue, époque.
-2. COHÉRENCE CATALOGUE (signal le plus fort) : cette combinaison existe-t-elle ? numéro vs total de l'extension, rareté vs numéro, crédit illustrateur, ligne de copyright vs époque, style du symbole d'énergie, type d'holo vs époque, carte réellement imprimée dans cette langue. Les numéros et extensions inventés sont le piège le plus fréquent.
-3. IMPRESSION ET TYPOGRAPHIE : graisses et crénage du nom, des PV et des attaques, niveau de noir, épaisseur et régularité de la bordure jaune, centrage, saturation, halo autour des glyphes.
-4. SURFACE : holo cohérent avec l'époque et la rareté, texture là où elle est attendue, uniformité du vernis.
-5. VERSO si présent : teinte du bleu, rondeur et centrage de la Poké Ball, détail du tourbillon, symétrie des marges, ligne ©.
-6. TRANCHE si présente : couche noire centrale visible.
-7. ANNONCE : prix vs marché réel, vocabulaire (proxy, orica, custom, réplique, fanmade), photos manifestement reprises d'ailleurs, composition du lot.
+Méthode :
+1. IDENTIFIER : nom, extension, numéro, rareté, langue, époque.
+2. COHÉRENCE CATALOGUE : cette combinaison existe-t-elle réellement ? numéro vs total de l'extension, rareté vs numéro, illustrateur, ligne de copyright vs époque, holo vs époque, carte imprimée dans cette langue. Un élément inventé est rédhibitoire. (catégorie "reproductible" : conforme ne prouve rien, incohérent condamne)
+3. IMPRESSION : trame, bavures, halo autour des glyphes, niveau de noir — uniquement si la densité le permet. ("difficile")
+4. COLORIMÉTRIE : saturation et gamut cohérents avec l'époque de la carte. ("difficile")
+5. SURFACE : holographie, texture, vernis, grain du carton. ("difficile")
+6. USURE : coins, tranches, rayures cohérents avec l'âge annoncé. Une carte présentée comme ancienne mais d'aspect neuf est suspecte ; une usure authentique est un signal positif réel. ("difficile")
+7. GÉOMÉTRIE : centrage, bordures, coupe — seulement si le biais est inférieur à 1.10. ("difficile")
+8. TYPOGRAPHIE ET MISE EN PAGE : ("reproductible")
+9. ANNONCE : prix vs marché, vocabulaire, photos reprises d'ailleurs. ("contextuel")
 
 Règles strictes :
-- N'invente jamais un indice que tu ne peux pas voir. Utilise "non_verifiable" largement.
-- Si la densité px/mm est insuffisante pour un critère, marque-le "non_verifiable" au lieu de deviner.
-- Se tromper dans les deux sens coûte cher. Préfère "indetermine" assorti d'une liste précise de photos à réclamer.
+- N'invente jamais un indice que tu ne peux pas voir. "non_verifiable" est un verdict honorable et attendu.
+- Si aucun critère "difficile" n'est vérifiable, dis-le explicitement dans le résumé : les photos ne peuvent pas établir l'authenticité, seulement la contredire.
+- Se tromper dans les deux sens coûte cher.
 
-Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maximum. Chaque chaîne fait au plus 110 caractères, sauf "resume" et "observation" qui vont jusqu'à 280. Le "resume" tient en deux phrases :
+Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maximum. Chaînes limitées à 110 caractères, sauf "resume" et "observation" jusqu'à 280. Le "resume" tient en deux ou trois phrases :
 {"identification":{"carte":"","extension":"","numero":"","langue":"","coherence":"coherent|incoherent|indetermine","note":""},
-"controles":[{"zone":"","critere":"","observation":"","verdict":"conforme|suspect|non_verifiable"}],
+"controles":[{"zone":"","critere":"","categorie":"reproductible|difficile|contextuel","observation":"","verdict":"conforme|suspect|non_verifiable"}],
 "drapeaux":[""],"positifs":[""],
-"score":0,"confiance":0,
-"verdict":"probablement_authentique|indetermine|suspect|probablement_faux",
+"confiance":0,
 "resume":"","questions":[""]}`;
 
       const corps = {
@@ -643,6 +793,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
           role: "user",
           content: [
             ...encodees.map((b64) => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } })),
+            ...encodeesRef.map((b64) => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } })),
             { type: "text", text: consigne },
           ],
         }],
@@ -665,9 +816,16 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
 
       const confBrute = Math.max(0, Math.min(100, Number(j.confiance) || 0));
       const conf = Math.min(confBrute, preuve.plafond);
-      let verdict = j.verdict || "indetermine";
-      if (conf < 45 && verdict === "probablement_authentique") verdict = "indetermine";
-      if (j.identification?.coherence === "incoherent") verdict = "probablement_faux";
+
+      // Le score n'est plus celui du modèle : il découle des catégories,
+      // donc un critère reproductible conforme ne peut plus le gonfler.
+      const note = scorer(j.controles, j.identification);
+
+      let verdict;
+      if (note.score <= 22) verdict = "probablement_faux";
+      else if (note.score < 45) verdict = "suspect";
+      else if (note.score >= 68 && conf >= 55 && !note.plafonneFauteDeProbant) verdict = "probablement_authentique";
+      else verdict = "indetermine";
 
       const message = `Bonjour,\n\nJe suis intéressé(e) par votre annonce. Avant d'acheter, pourriez-vous m'envoyer :\n${
         [...(j.questions || []), ...preuve.manques].filter(Boolean).slice(0, 6).map((q) => `• ${q}`).join("\n")
@@ -680,7 +838,10 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
 
       const rapport = {
         ...j, confiance: conf, confBrute, verdict, message, tokens,
-        score: Math.max(0, Math.min(100, Number(j.score) || 0)),
+        score: note.score,
+        probantsVus: note.probantsVus,
+        plafonneFauteDeProbant: note.plafonneFauteDeProbant,
+        avecReference: retenuesRef.length > 0,
       };
       setResultat(rapport);
 
@@ -770,12 +931,20 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
                   <div className="ap-rang" key={p.id}>
                     <img src={p.url} alt={p.nom} />
                     <div className="ap-rang-info">
-                      <select className="ap-menu" value={p.role} aria-label={`Rôle de ${p.nom}`}
-                              onChange={(e) => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, role: e.target.value } : q))}>
-                        {ROLES.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
-                      </select>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <select className="ap-menu" value={p.role} aria-label={`Rôle de ${p.nom}`} style={{ flex: 1 }}
+                                onChange={(e) => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, role: e.target.value } : q))}>
+                          {ROLES.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
+                        </select>
+                        <div className="ap-seg" role="group" aria-label="Sujet ou référence">
+                          <button aria-pressed={p.sujet !== false}
+                                  onClick={() => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, sujet: true } : q))}>Sujet</button>
+                          <button aria-pressed={p.sujet === false}
+                                  onClick={() => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, sujet: false } : q))}>Réf.</button>
+                        </div>
+                      </div>
                       <div className="ap-meta ap-mono">
-                        {p.m.pxParMm} px/mm · netteté {p.m.nettete} · reflets {p.m.reflets} %
+                        {p.m.pxParMm} px/mm · sat {p.m.satMoy} % · biais {p.m.biais || "n/d"}
                       </div>
                     </div>
                     <button className="ap-x" aria-label="Retirer cette photo"
@@ -913,22 +1082,36 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
 
               {Array.isArray(res.controles) && res.controles.length > 0 && (
                 <div className="ap-carte">
-                  <div className="ap-carte-corps">
-                    <h2 className="ap-titre-sec">Contrôles</h2>
-                    {res.controles.map((c, i) => (
-                      <div className="ap-constat" key={i}>
-                        <span className="ap-point" style={{
-                          background: c.verdict === "suspect" ? "var(--red)"
-                                    : c.verdict === "conforme" ? "var(--green)" : "var(--label3)",
-                        }} />
-                        <div>
-                          <div className="ap-c-zone">{c.zone} · {c.verdict === "non_verifiable" ? "non vérifiable" : c.verdict}</div>
-                          <div className="ap-c-titre">{c.critere}</div>
-                          <div className="ap-c-obs">{c.observation}</div>
+                <div className="ap-carte-corps">
+                  <h2 className="ap-titre-sec">Contrôles</h2>
+                  {res.plafonneFauteDeProbant && (
+                    <div className="ap-alerte" style={{
+                      background: "color-mix(in srgb, var(--orange) 12%, transparent)", marginBottom: 16,
+                    }}>
+                      Aucun critère probant n'a pu être observé. Tout ce qui a été vérifié ici,
+                      un bon faux le reproduit. Ces photos peuvent contredire l'authenticité, pas l'établir.
+                    </div>
+                  )}
+                  {res.controles.map((c, i) => (
+                    <div className="ap-constat" key={i}>
+                      <span className="ap-point" style={{
+                        background: c.verdict === "suspect" ? "var(--red)"
+                                  : c.verdict === "conforme" ? (c.categorie === "difficile" ? "var(--green)" : "var(--label3)")
+                                  : "var(--label3)",
+                      }} />
+                      <div>
+                        <div className="ap-c-zone">
+                          {c.zone} · {c.verdict === "non_verifiable" ? "non vérifiable" : c.verdict}
+                          <span className={`ap-cat ${c.categorie === "difficile" ? "probant" : ""}`}>
+                            {c.categorie === "difficile" ? "probant" : c.categorie === "contextuel" ? "contexte" : "copiable"}
+                          </span>
                         </div>
+                        <div className="ap-c-titre">{c.critere}</div>
+                        <div className="ap-c-obs">{c.observation}</div>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  ))}
+                </div>
                 </div>
               )}
 
