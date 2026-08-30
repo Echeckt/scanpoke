@@ -264,6 +264,11 @@ const ROLES = [
   { v: "autre", t: "Autre" },
 ];
 const PRIORITE = { recto: 0, verso: 1, macro: 2, tranche: 3, lot: 4, autre: 5 };
+const EDITIONS = [
+  { v: "japonaise", t: "Dos japonais" },
+  { v: "internationale", t: "Dos international" },
+  { v: "indetermine", t: "Édition ?" },
+];
 
 /* ── mesures pixel dans le navigateur ─────────────────────────── */
 function mesurerImage(img) {
@@ -374,8 +379,8 @@ function mesurerImage(img) {
   const cy0 = minY + (maxY - minY) * 0.35, cy1 = minY + (maxY - minY) * 0.65;
   const mx0 = minX + (maxX - minX) * 0.08, mx1 = maxX - (maxX - minX) * 0.08;
   const my0 = minY + (maxY - minY) * 0.08, my1 = maxY - (maxY - minY) * 0.08;
-  let bleus = 0, jaunes = 0, rougesC = 0, nC = 0, jaunesB = 0, nB = 0;
-  let sinC = 0, cosC = 0, nTeinteC = 0;
+  let bleus = 0, jaunes = 0, rougesC = 0, nC = 0, jaunesB = 0, nB = 0, satBleuSom = 0, nBleu = 0;
+  let sommeBruitC = 0, nBruitC = 0, teintePrecC = null, xPrecC = null;
 
   for (let y = Math.max(0, minY); y <= Math.min(h - 1, maxY); y++)
     for (let x = Math.max(0, minX); x <= Math.min(w - 1, maxX); x++) {
@@ -401,17 +406,27 @@ function mesurerImage(img) {
       const estBleu = teinte >= 190 && teinte <= 255 && sat > 0.22;
       const estJaune = teinte >= 38 && teinte <= 72 && sat > 0.3;
       const estRouge = (teinte < 18 || teinte > 342) && sat > 0.35;
-      if (estBleu) bleus++;
+      if (estBleu) { bleus++; satBleuSom += sat; nBleu++; }
       if (estJaune) jaunes++;
 
       const auCentre = x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1;
       if (auCentre) {
         nC++; if (estRouge) rougesC++;
-        // Un aplat imprimé (la Poké Ball) garde une teinte quasi constante ;
-        // une illustration ou un fond holographique la fait varier sans arrêt.
+        // Un aplat imprimé (la Poké Ball) est fait de quelques zones de
+        // couleur unie : la teinte ne saute qu'aux quelques pixels de
+        // frontière entre elles. Une illustration ou un fond holographique
+        // scintille pixel à pixel, partout — d'où l'écart moyen entre
+        // voisins immédiats plutôt qu'une variance sur toute la zone, qui
+        // confondrait à tort "deux aplats différents" et "du bruit".
         if (sat > 0.15) {
-          const rad = (teinte * Math.PI) / 180;
-          sinC += Math.sin(rad); cosC += Math.cos(rad); nTeinteC++;
+          if (teintePrecC !== null && x === xPrecC + 1) {
+            let diff = Math.abs(teinte - teintePrecC);
+            if (diff > 180) diff = 360 - diff;
+            sommeBruitC += diff; nBruitC++;
+          }
+          teintePrecC = teinte; xPrecC = x;
+        } else {
+          teintePrecC = null; xPrecC = null;
         }
       }
       const auBord = x < mx0 || x > mx1 || y < my0 || y > my1;
@@ -425,11 +440,15 @@ function mesurerImage(img) {
   const partJaune = sN ? Math.round((jaunes / sN) * 1000) / 10 : 0;
   const rougeCentre = nC ? Math.round((rougesC / nC) * 1000) / 10 : 0;
   const jauneBord = nB ? Math.round((jaunesB / nB) * 1000) / 10 : 0;
-  // 0 = teinte parfaitement stable au centre (aplat imprimé) ; 1 = elle part
-  // dans tous les sens (illustration détaillée, paillettes d'holographie).
-  const teinteVarCentre = nTeinteC
-    ? Math.round((1 - Math.sqrt(sinC * sinC + cosC * cosC) / nTeinteC) * 100) / 100
-    : 1;
+  // Écart moyen de teinte (en degrés) entre pixels voisins dans la zone
+  // centrale. Proche de 0 = quelques aplats nets (Poké Ball authentique).
+  // Élevé = ça scintille partout (illustration détaillée, holo, paillettes).
+  const bruitTeinteCentre = nBruitC ? Math.round((sommeBruitC / nBruitC) * 10) / 10 : 0;
+  // Saturation moyenne des pixels bleus seulement (pas de toute la carte) :
+  // le dos japonais est décrit comme plus sombre et plus saturé que le dos
+  // international, plus clair. Sert uniquement à une suggestion automatique
+  // d'édition, jamais imposée — c'est un repère, pas une mesure calibrée.
+  const satBleu = nBleu ? Math.round((satBleuSom / nBleu) * 1000) / 10 : 0;
 
   /* ── géométrie ─────────────────────────────────────────────────
      Une photo prise de biais rend le centrage, l'épaisseur de bordure
@@ -449,7 +468,7 @@ function mesurerImage(img) {
   return {
     natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm, nettete, reflets, bouches, emprise, blocs,
     periodicite, pasTrame: lagPic, satMoy, satP90, partVive, biais, ratio,
-    partBleu, partJaune, rougeCentre, jauneBord, teinteVarCentre,
+    partBleu, partJaune, rougeCentre, jauneBord, bruitTeinteCentre, satBleu,
   };
 }
 
@@ -472,7 +491,7 @@ function deduireRole(m) {
   // si ce centre est un aplat imprimé. Un Pokémon rouge/orange sur fond
   // holographique donne le même bleu+rouge sans être un dos : sa teinte,
   // elle, saute partout (illustration, paillettes), donc on l'exclut ici.
-  const centreAplat = m.teinteVarCentre < 0.4;
+  const centreAplat = m.bruitTeinteCentre < 22;
   if (m.partBleu > 26 && m.rougeCentre > 6 && centreAplat) return "verso";
   // Bleu massif suffit, même si le centre est masqué par un doigt ou un reflet.
   if (m.partBleu > 42 && centreAplat) return "verso";
@@ -480,6 +499,17 @@ function deduireRole(m) {
   if (m.jauneBord > 16) return "recto";
 
   return m.partBleu > 20 ? "verso" : "recto";
+}
+
+/* ── suggestion d'édition du dos (japonais / international) ──────
+   Repère de couleur seulement, pas une lecture de texte : le dos
+   japonais est décrit comme plus sombre et plus saturé que le dos
+   international, plus clair. Seuil choisi au jugé, jamais mesuré sur
+   un vrai échantillon — c'est pour ça que l'appli l'affiche comme une
+   suggestion modifiable, jamais comme un fait acquis.               */
+function suggererEdition(m) {
+  if (m.partBleu < 15) return "indetermine"; // pas assez de bleu pour juger
+  return m.satBleu >= 58 ? "japonaise" : "internationale";
 }
 
 function redimensionner(img, max = 1400, q = 0.85) {
@@ -997,10 +1027,12 @@ export default function Scanner() {
     });
     let m;
     try { m = mesurerImage(img); }
-    catch { m = { natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm: 0, nettete: 0, reflets: 0, bouches: 0, emprise: 0, blocs: 1, periodicite: 0, pasTrame: 0, satMoy: 0, partBleu: 0, ratio: 0, teinteVarCentre: 1 }; }
+    catch { m = { natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm: 0, nettete: 0, reflets: 0, bouches: 0, emprise: 0, blocs: 1, periodicite: 0, pasTrame: 0, satMoy: 0, partBleu: 0, ratio: 0, bruitTeinteCentre: 99 }; }
     let role;
     try { role = roleForce || deduireRole(m); } catch { role = roleForce || "recto"; }
-    return { id: crypto.randomUUID(), nom, url, img, m, role, sujet: true };
+    let edition = "indetermine";
+    try { if (role === "verso") edition = suggererEdition(m); } catch { edition = "indetermine"; }
+    return { id: crypto.randomUUID(), nom, url, img, m, role, sujet: true, edition };
   };
 
   const ajouterFichiers = useCallback(async (fichiers) => {
@@ -1074,10 +1106,14 @@ export default function Scanner() {
 
       const encodees = retenues.map((p) => redimensionner(p.img));
       const encodeesRef = retenuesRef.map((p) => redimensionner(p.img));
-      log(approfondi ? "Vérification du catalogue en ligne" : "Analyse en cours");
+      log(approfondi ? "Recherche web en cours" : "Analyse en cours");
 
-      const decrire = (p, i, prefixe) =>
-        `${prefixe} ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | biais perspective ${p.m.biais || "n/d"} | reflets ${p.m.reflets}% | saturation moyenne ${p.m.satMoy}% (p90 ${p.m.satP90}%, part très vive ${p.m.partVive}%) | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)`;
+      const decrire = (p, i, prefixe) => {
+        const indiceDos = p.role === "verso" && p.edition && p.edition !== "indetermine"
+          ? ` | suggestion automatique d'édition du dos (à vérifier toi-même sur l'image, pas un fait acquis) : ${p.edition}`
+          : "";
+        return `${prefixe} ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | biais perspective ${p.m.biais || "n/d"} | reflets ${p.m.reflets}% | saturation moyenne ${p.m.satMoy}% (p90 ${p.m.satP90}%, part très vive ${p.m.partVive}%) | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)${indiceDos}`;
+      };
 
       const contexte = retenues.map((p, i) => decrire(p, i, "Photo sujet")).join("\n");
 
@@ -1112,7 +1148,7 @@ NE FAIS JAMAIS MONTER TA CONFIANCE PARCE QU'UN ÉLÉMENT REPRODUCTIBLE EST DEVEN
 Mesures effectuées sur les pixels :
 ${contexte}
 
-Lisibilité : <8 px/mm la carte est à peine distinguable ; 8-15 gros éléments ; 15-30 le texte des attaques ; 30-60 micro-typographie ; >60 trame d'impression.
+Lisibilité : <8 px/mm la carte est à peine distinguable ; 8-15 gros éléments ; 15-30 le texte des attaques ; 30-60 micro-typographie ; >60 trame d'impression. Cette échelle parle de FINESSE — texte, trame, micro-détail. La couleur d'ensemble d'une zone (le bleu du dos, le rouge de la Poké Ball, le jaune de la bordure) se juge sur une moyenne de milliers de pixels : elle reste jugeable même à 8-15 px/mm ou sur un seul angle fixe. Ne te sers JAMAIS d'une densité faible ou d'un angle unique comme excuse pour classer la colorimétrie "non_verifiable" — ça, c'est vrai pour l'holographie (qui a besoin de plusieurs angles) et pour la trame d'impression (qui a besoin de finesse), pas pour une teinte dominante.
 Biais de perspective : 1.00 = photo bien à plat. Au-delà de 1.10, le centrage, l'épaisseur de bordure et le crénage sont déformés — marque ces critères "non_verifiable".
 Saturation : mesurée après neutralisation de la lumière ambiante sur le fond de la photo. Attention, l'écart joue DANS LES DEUX SENS : les contrefaçons sont soit trop vives, soit trop ternes et délavées par rapport à la carte d'époque. Une saturation anormalement basse est un signal au même titre qu'une saturation haute.${calibTexte}${refTexte}
 
@@ -1124,7 +1160,7 @@ Méthode :
 1. IDENTIFIER : nom, extension, numéro, rareté, époque. Le "nom" doit être copié EXACTEMENT tel qu'il est imprimé sur le recto, dans sa langue et son orthographe d'origine — jamais traduit ni francisé (une carte anglaise nommée "Charizard" reste "Charizard", pas "Dracaufeu" : un nom traduit rend le contrôle catalogue muet). Pour la langue, identifie la famille d'écriture du recto — c'est un repère visuel immédiat, sans ambiguïté : kana/kanji = japonais, sinogrammes = chinois (simplifié ou traditionnel), hangul = coréen, alphabet latin = langue européenne (français, anglais, allemand, espagnol, italien…).
 2. COHÉRENCE CATALOGUE : cette combinaison existe-t-elle réellement ? numéro vs total de l'extension, rareté vs numéro, illustrateur, ligne de copyright vs époque, holo vs époque, carte imprimée dans cette langue. Si une photo du dos est disponible, regarde s'il porte le dos exclusif japonais (bleu plus sombre et saturé, contour de balle épais, balle immobile, bordure grise) ou le dos international partagé par tout le reste du monde (bleu plus clair, contour fin, effet de tournoiement, bordure jaune) — le texte en arc aide aussi ("POCKET MONSTERS" ou "Pokémon" = japonais dans les deux cas, à condition que le reste du dessin soit bien japonais). Un dos japonais avec un recto écrit dans une autre écriture (ou l'inverse : dos international avec un recto en japonais) est une incohérence de catalogue à part entière — le dos ne distingue en revanche jamais le chinois, le coréen ou une langue européenne entre eux, seule l'écriture du recto le fait. Un élément inventé est rédhibitoire. (catégorie "reproductible" : conforme ne prouve rien, incohérent condamne)
 3. IMPRESSION : trame, bavures, halo autour des glyphes, niveau de noir — uniquement si la densité le permet. ("difficile")
-4. COLORIMÉTRIE : saturation et gamut cohérents avec l'époque de la carte. ("difficile")
+4. COLORIMÉTRIE : saturation et gamut cohérents avec l'époque de la carte — vérifiable sur une seule photo, quelle que soit sa résolution (voir remarque sur la lisibilité). Regarde en particulier, si le dos est visible, si le bleu du tourbillon est plausible : un bleu qui vire au cyan, au turquoise ou au néon, trop uniforme ou trop vif par rapport au bleu marine/pétrole habituel, est un signal réel — décris ce que tu vois plutôt que de conclure "non vérifiable" par défaut. ("difficile")
 5. SURFACE : holographie, texture, vernis, grain du carton. ("difficile")
 6. USURE : coins, tranches, rayures cohérents avec l'âge annoncé. Une carte présentée comme ancienne mais d'aspect neuf est suspecte ; une usure authentique est un signal positif réel. ("difficile")
 7. GÉOMÉTRIE : centrage, bordures, coupe — seulement si le biais est inférieur à 1.10. ("difficile")
@@ -1321,7 +1357,10 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                     <div className="ap-rang-info">
                       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         <select className="ap-menu" value={p.role} aria-label={`Rôle de ${p.nom}`} style={{ flex: 1 }}
-                                onChange={(e) => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, role: e.target.value } : q))}>
+                                onChange={(e) => setPhotos((l) => l.map((q) => q.id === p.id ? {
+                                  ...q, role: e.target.value,
+                                  edition: e.target.value === "verso" ? suggererEdition(q.m) : "indetermine",
+                                } : q))}>
                           {ROLES.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
                         </select>
                         <div className="ap-seg" role="group" aria-label="Sujet ou référence">
@@ -1331,6 +1370,14 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                                   onClick={() => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, sujet: false } : q))}>Réf.</button>
                         </div>
                       </div>
+                      {p.role === "verso" && (
+                        <select className="ap-menu" value={p.edition || "indetermine"}
+                                aria-label={`Édition suggérée pour ${p.nom}`}
+                                style={{ marginTop: 6, fontSize: 12.5, padding: "5px 8px" }}
+                                onChange={(e) => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, edition: e.target.value } : q))}>
+                          {EDITIONS.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
+                        </select>
+                      )}
                       <div className="ap-meta ap-mono">
                         {p.m.pxParMm} px/mm · sat {p.m.satMoy} % · biais {p.m.biais || "n/d"}
                       </div>
@@ -1360,11 +1407,15 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
 
             <div className="ap-reglage">
               <div style={{ flex: 1 }}>
-                <div className="ap-reglage-t">Vérifier le catalogue</div>
-                <div className="ap-reglage-s">Confronte extension, numéro et rareté aux bases publiques. Plus lent.</div>
+                <div className="ap-reglage-t">Recherche web pendant l'analyse</div>
+                <div className="ap-reglage-s">
+                  En plus du catalogue TCGdex (automatique) : Claude cherche sur le web le prix
+                  réel du marché, les variantes/erratas rares, et si les photos de l'annonce sont
+                  reprises d'ailleurs. Plus lent.
+                </div>
               </div>
               <label className="ap-switch">
-                <input type="checkbox" checked={approfondi} aria-label="Vérifier le catalogue en ligne"
+                <input type="checkbox" checked={approfondi} aria-label="Laisser Claude chercher sur le web pendant l'analyse"
                        onChange={(e) => setApprofondi(e.target.checked)} />
                 <span className="ap-piste" /><span className="ap-pastille" />
               </label>
