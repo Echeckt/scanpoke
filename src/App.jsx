@@ -635,6 +635,72 @@ function calibration(historique) {
   };
 }
 
+/* ── connaissances par époque ──────────────────────────────────
+   Compilé à partir de guides d'authentification publiés en 2026.
+   Le classement copiable / probant compte plus que la liste elle-même :
+   c'est lui qui empêche l'outil de se rassurer à bon compte.     */
+const SAVOIR = `
+CONNAISSANCES DE RÉFÉRENCE (état 2026)
+
+Dimensions communes : 63 × 88 mm, poids 1,70 à 1,80 g. Les contrefaçons tombent le plus souvent entre 1,2 et 1,5 g, ou au contraire entre 2,0 et 2,5 g, parce que le carton n'est pas le bon. Les sources divergent sur l'épaisseur exacte : ne t'appuie pas dessus.
+
+BASE SET JAPONAIS 1996-1998
+Copyright : mentions Nintendo, GAMEFREAK, Creatures avec millésimes 1996-1997 selon le tirage. Bordures blanches plus étroites que sur les rééditions occidentales. Carton légèrement plus fin que le moderne. Holo starburst d'époque, pas de texture en relief.
+Signature chromatique : jaunes chauds légèrement crémeux, rouges tirant sur le brique, bleus du dos profonds sans jamais être fluorescents.
+Les faux ratent dans LES DEUX SENS : soit trop vifs (jaune citron agressif, rouge néon), soit trop ternes et délavés. Une saturation anormalement BASSE est un signal au même titre qu'une saturation haute.
+
+WIZARDS OF THE COAST 1999-2003
+Base Set anglais : la ligne de copyright mentionne Nintendo, Creatures, GAME FREAK avec les millésimes 1995, 96, 98, 99, et Wizards pour 1999. Le nom du Pokémon porte un ®. Le logo Nintendo porte TM ou ®. Le format de la carte est imprimé en bas à gauche.
+1ère édition : tampon à gauche de l'illustration ET absence d'ombre portée au cadre. Une carte estampillée 1ère édition qui porte une ombre portée est fausse, sans discussion.
+Fautes classiques des contrefaçons : orthographe du copyright (Nintedo, Gamefrek), symboles ® ou TM absents, accent manquant à Pokémon, coquilles dans l'entrée Pokédex.
+
+ÈRE E-CARD À ÉPÉE-BOUCLIER 2002-2022
+Motifs holographiques spécifiques par rareté : cosmos sur les holos standard, gravure sur les cartes V, textures pleine illustration sur les full arts.
+
+ÈRE MODERNE, ÉCARLATE-VIOLET ET MÉGA-ÉVOLUTION 2023-2026
+Cibles privilégiées des faussaires : Méga-Évolution ex, Special Illustration Rares, alt arts. Motif cosmos ou matrice de points. La texture en relief doit exister là où la rareté l'impose.
+Défauts fréquents relevés en 2026 : carton rugueux, holographie décentrée, graisse de police erronée, tranches irrégulières.
+
+TEINTES QUI TRAHISSENT, TOUTES ÉPOQUES
+Jaunes qui virent au verdâtre, rouges qui virent à l'orangé, bleus qui virent au grisâtre. L'écart est faible mais constant sur toute la carte.
+
+HOLOGRAPHIE
+Le motif doit changer avec l'angle et correspondre à l'époque et à la rareté. Un film arc-en-ciel générique, identique quel que soit l'angle, plat et sans profondeur, est un faux. Certains faux posent un simple foil argenté avec une couleur imprimée par-dessus.
+
+CATALOGUE
+Une carte annoncée 1/1 ou en tirage unique qui n'apparaît dans aucune base publique doit être écartée. Les coffrets de notation contrefaits existent aussi : un boîtier PSA ou BGS ne garantit pas tout.
+`.trim();
+
+/* Ordonnés par pouvoir discriminant réel en 2026, pas par commodité.
+   Aucun ne se fait depuis une photo — c'est précisément le propos. */
+const TESTS_PHYSIQUES = [
+  {
+    titre: "Texture au doigt",
+    force: "Le plus fiable aujourd'hui",
+    texte: "Passez un ongle sur la face avant. Une carte authentique offre un grain fin, presque un microsillon, avec une légère résistance sonore. Les contrefaçons glissent : lisses, cireuses ou brillantes. Certaines impriment un motif de texture qui trompe l'œil sous verre, mais la surface reste plate au toucher. Reproduire un carton réellement gaufré à grande échelle reste coûteux, et c'est ce test qui rattrape les faux ayant passé la lumière.",
+  },
+  {
+    titre: "Pesée",
+    force: "Très fiable, demande une balance",
+    texte: "1,70 à 1,80 g pour une carte standard, un peu plus pour une holo ou une texturée. Les contrefaçons manquent la cible de 0,2 g ou davantage, par défaut comme par excès. Une balance au centième coûte une quinzaine d'euros. Pesez d'abord cinq cartes dont vous êtes sûr pour situer votre propre référence, puis la carte suspecte : un écart de plus de 0,05 g avec ce groupe mérite la méfiance.",
+  },
+  {
+    titre: "Holographie sous angle variable",
+    force: "Fiable, gratuit",
+    texte: "Inclinez la carte sous une lampe. Le motif doit se déplacer et correspondre à l'époque : starburst sur le vintage, cosmos sur les holos standard, gravure sur les V, texture sur les pleines illustrations. Un arc-en-ciel générique qui reste identique quel que soit l'angle, ou un foil argenté recouvert d'une couleur imprimée, trahit la copie.",
+  },
+  {
+    titre: "Tranche et lumière",
+    force: "Filtre de premier passage seulement",
+    texte: "Placez la carte devant une lampe puissante. Une carte authentique est un sandwich à noyau noir qui bloque presque toute la lumière. Attention : les contrefaçons de 2025 et 2026 ajoutent désormais leur propre couche noire. Un échec règle la question, une réussite ne prouve plus rien. C'est un tri, pas un verdict.",
+  },
+  {
+    titre: "Trame d'impression à la loupe",
+    force: "Décisif, demande une loupe 10×",
+    texte: "Sous grossissement, l'impression authentique révèle une rosace de points régulière. Les copies produisent un tramage différent, des points empâtés ou un rendu continu. C'est le contrôle que les professionnels emploient sur les cartes de valeur, et celui qu'aucune photo d'annonce ne permet.",
+  },
+];
+
 const TEINTE = {
   probablement_authentique: "var(--green)",
   indetermine: "var(--orange)",
@@ -877,7 +943,9 @@ ${contexte}
 
 Lisibilité : <8 px/mm la carte est à peine distinguable ; 8-15 gros éléments ; 15-30 le texte des attaques ; 30-60 micro-typographie ; >60 trame d'impression.
 Biais de perspective : 1.00 = photo bien à plat. Au-delà de 1.10, le centrage, l'épaisseur de bordure et le crénage sont déformés — marque ces critères "non_verifiable".
-Saturation : mesurée après neutralisation de la lumière ambiante sur le fond de la photo. Une saturation moyenne nettement plus élevée que sur une carte d'époque comparable oriente vers une réimpression récente.${calibTexte}${refTexte}
+Saturation : mesurée après neutralisation de la lumière ambiante sur le fond de la photo. Attention, l'écart joue DANS LES DEUX SENS : les contrefaçons sont soit trop vives, soit trop ternes et délavées par rapport à la carte d'époque. Une saturation anormalement basse est un signal au même titre qu'une saturation haute.${calibTexte}${refTexte}
+
+${SAVOIR}
 
 Annonce : titre="${annonce.titre || "non fourni"}" | prix="${annonce.prix || "non fourni"}" | description="${(annonce.texte || "non fournie").slice(0, 700)}"
 
@@ -1268,6 +1336,26 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                   </div>
                 </div>
               )}
+
+              <div className="ap-carte">
+                <div className="ap-carte-corps">
+                  <h2 className="ap-titre-sec">À faire vous-même, carte en main</h2>
+                  <p className="ap-meta" style={{ marginTop: 0, marginBottom: 14 }}>
+                    Aucun de ces contrôles ne se fait depuis une photo, et tous valent mieux que
+                    l'analyse ci-dessus. Classés par pouvoir discriminant réel en 2026.
+                  </p>
+                  {TESTS_PHYSIQUES.map((t, i) => (
+                    <div className="ap-constat" key={i}>
+                      <span className="ap-point" style={{ background: "var(--blue)" }} />
+                      <div>
+                        <div className="ap-c-zone">{t.force}</div>
+                        <div className="ap-c-titre">{t.titre}</div>
+                        <div className="ap-c-obs">{t.texte}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
               <div className="ap-carte">
                 <div className="ap-carte-corps">
