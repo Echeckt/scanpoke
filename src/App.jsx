@@ -631,8 +631,10 @@ function scorer(controles, identification, confiance = 100) {
      pas une preuve, mais la présence d'un défaut en est une.      */
   if (score > 50) score = 50 + (score - 50) * (Math.max(0, Math.min(100, confiance)) / 100);
 
-  // Une incohérence catalogue reste rédhibitoire.
+  // Une incohérence catalogue reste rédhibitoire — qu'elle vienne du modèle
+  // ou du recoupement déterministe dos/langue fait côté client.
   if (identification?.coherence === "incoherent") score = Math.min(score, 8);
+  if (incoherenceDos(identification) === true) score = Math.min(score, 8);
 
   return {
     score: Math.max(0, Math.min(100, Math.round(score))),
@@ -711,6 +713,9 @@ CONNAISSANCES DE RÉFÉRENCE (état 2026)
 
 Dimensions communes : 63 × 88 mm, poids 1,70 à 1,80 g. Les contrefaçons tombent le plus souvent entre 1,2 et 1,5 g, ou au contraire entre 2,0 et 2,5 g, parce que le carton n'est pas le bon. Les sources divergent sur l'épaisseur exacte : ne t'appuie pas dessus.
 
+MARQUEUR D'ÉDITION AU DOS
+Le texte inscrit en arc au-dessus de la Poké Ball, sur le dos, distingue l'édition bien plus fiablement qu'aucune texture : les tirages japonais de 1996-1998 portent la mention « POCKET MONSTERS », tandis que la quasi-totalité des tirages internationaux (anglais, français, et les langues suivantes) portent le logo stylisé « Pokémon ». Ce marqueur est identique sur toutes les cartes d'une même édition, donc facile à lire même sur une photo moyenne, et il permet un contrôle de cohérence immédiat : si le dos porte la mention japonaise mais que le texte du recto est rédigé dans une autre langue (ou l'inverse), c'est une incohérence de catalogue, pas un simple doute — classe-la comme telle. Reste prudent sur les rééditions ou promos récentes qui peuvent s'écarter de cette règle générale ; en cas de doute, dis-le plutôt que de trancher.
+
 BASE SET JAPONAIS 1996-1998
 Copyright : mentions Nintendo, GAMEFREAK, Creatures avec millésimes 1996-1997 selon le tirage. Bordures blanches plus étroites que sur les rééditions occidentales. Carton légèrement plus fin que le moderne. Holo starburst d'époque, pas de texture en relief.
 Signature chromatique : jaunes chauds légèrement crémeux, rouges tirant sur le brique, bleus du dos profonds sans jamais être fluorescents.
@@ -767,6 +772,25 @@ const TESTS_PHYSIQUES = [
     texte: "Sous grossissement, l'impression authentique révèle une rosace de points régulière. Les copies produisent un tramage différent, des points empâtés ou un rendu continu. C'est le contrôle que les professionnels emploient sur les cartes de valeur, et celui qu'aucune photo d'annonce ne permet.",
   },
 ];
+
+/* ── cohérence dos / langue ────────────────────────────────────
+   Double vérification indépendante du jugement du modèle : le mot
+   inscrit au dos ("POCKET MONSTERS" = édition japonaise, logo
+   "Pokémon" = édition internationale) et la langue lue au recto
+   doivent raconter la même histoire. On ne fait confiance ni
+   exclusivement au modèle ni exclusivement à ce mot-clé : les deux
+   se recoupent, ce qui rattrape une éventuelle erreur de l'un ou
+   de l'autre.                                                    */
+function incoherenceDos(identification) {
+  const dos = identification?.edition_dos;
+  if (!dos || dos === "non_visible") return null;
+  const langue = String(identification?.langue || "").toLowerCase();
+  const japonais = /japon|jp\b/.test(langue);
+  const autreLangue = /fran[cç]ais|anglais|allemand|italien|espagnol|cor[ée]en|chinois|n[ée]erlandais|portugais/.test(langue);
+  if (dos === "japonaise" && autreLangue) return true;
+  if (dos === "internationale" && japonais) return true;
+  return false;
+}
 
 const TEINTE = {
   probablement_authentique: "var(--green)",
@@ -1020,7 +1044,7 @@ Annonce : titre="${annonce.titre || "non fourni"}" | prix="${annonce.prix || "no
 
 Méthode :
 1. IDENTIFIER : nom, extension, numéro, rareté, langue, époque.
-2. COHÉRENCE CATALOGUE : cette combinaison existe-t-elle réellement ? numéro vs total de l'extension, rareté vs numéro, illustrateur, ligne de copyright vs époque, holo vs époque, carte imprimée dans cette langue. Un élément inventé est rédhibitoire. (catégorie "reproductible" : conforme ne prouve rien, incohérent condamne)
+2. COHÉRENCE CATALOGUE : cette combinaison existe-t-elle réellement ? numéro vs total de l'extension, rareté vs numéro, illustrateur, ligne de copyright vs époque, holo vs époque, carte imprimée dans cette langue. Si une photo du dos est disponible, lis le texte en arc au-dessus de la Poké Ball ("POCKET MONSTERS" = édition japonaise, logo "Pokémon" = édition internationale) et confronte-le à la langue du texte du recto : un dos japonais avec un recto en français (ou l'inverse) est une incohérence de catalogue à part entière. Un élément inventé est rédhibitoire. (catégorie "reproductible" : conforme ne prouve rien, incohérent condamne)
 3. IMPRESSION : trame, bavures, halo autour des glyphes, niveau de noir — uniquement si la densité le permet. ("difficile")
 4. COLORIMÉTRIE : saturation et gamut cohérents avec l'époque de la carte. ("difficile")
 5. SURFACE : holographie, texture, vernis, grain du carton. ("difficile")
@@ -1033,9 +1057,10 @@ Règles strictes :
 - N'invente jamais un indice que tu ne peux pas voir. "non_verifiable" est un verdict honorable et attendu.
 - Si aucun critère "difficile" n'est vérifiable, dis-le explicitement dans le résumé : les photos ne peuvent pas établir l'authenticité, seulement la contredire.
 - Se tromper dans les deux sens coûte cher.
+- "edition_dos" : renseigne-le uniquement si une photo du dos est présente et lisible ("japonaise" pour "POCKET MONSTERS", "internationale" pour le logo "Pokémon"). Mets "non_visible" si aucun dos n'est fourni ou si le texte est illisible — n'invente jamais cette valeur.
 
 Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maximum. Chaînes limitées à 110 caractères, sauf "resume" et "observation" jusqu'à 280. Le "resume" tient en deux ou trois phrases :
-{"identification":{"carte":"","extension":"","numero":"","langue":"","coherence":"coherent|incoherent|indetermine","note":""},
+{"identification":{"carte":"","extension":"","numero":"","langue":"","edition_dos":"japonaise|internationale|non_visible","coherence":"coherent|incoherent|indetermine","note":""},
 "controles":[{"zone":"","critere":"","categorie":"reproductible|difficile|contextuel","observation":"","verdict":"conforme|suspect|non_verifiable"}],
 "drapeaux":[""],"positifs":[""],
 "confiance":0,
@@ -1330,6 +1355,9 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                       </div>
                       <div className="ap-meta" style={{ marginTop: 4 }}>
                         {res.identification.extension || "extension inconnue"} · n° {res.identification.numero || "—"} · {res.identification.langue || "—"}
+                        {res.identification.edition_dos && res.identification.edition_dos !== "non_visible" && (
+                          <> · dos {res.identification.edition_dos}</>
+                        )}
                       </div>
                       <div style={{
                         marginTop: 7, fontSize: 14, fontWeight: 500,
@@ -1339,6 +1367,13 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                         Catalogue : {res.identification.coherence || "indéterminé"}
                         {res.identification.note ? ` — ${res.identification.note}` : ""}
                       </div>
+                      {incoherenceDos(res.identification) === true && (
+                        <div className="ap-alerte" style={{ marginTop: 9 }}>
+                          Le dos indique une édition {res.identification.edition_dos} alors que le recto
+                          semble en {res.identification.langue}. Ce décalage est rédhibitoire — vérifiez
+                          qu'il ne s'agit pas de deux cartes différentes prises en photo, sinon écartez l'annonce.
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
