@@ -264,10 +264,19 @@ const ROLES = [
   { v: "autre", t: "Autre" },
 ];
 const PRIORITE = { recto: 0, verso: 1, macro: 2, tranche: 3, lot: 4, autre: 5 };
-const EDITIONS = [
-  { v: "japonaise", t: "Dos japonais" },
-  { v: "internationale", t: "Dos international" },
-  { v: "indetermine", t: "Édition ?" },
+const FAMILLES_DOS = [
+  { v: "indetermine", t: "Dos : détection auto" },
+  { v: "japonaise_old", t: "🇯🇵 Japonais vintage · Old Back" },
+  { v: "japonaise_moderne", t: "🇯🇵 Japonais moderne" },
+  { v: "internationale", t: "🌍 Dos international" },
+];
+
+const MARCHES = [
+  { v: "auto", t: "🌐 Marché : détection auto" },
+  { v: "japonais", t: "🇯🇵 Japonais" },
+  { v: "chinois", t: "🇨🇳 Chinois" },
+  { v: "europeen", t: "🇪🇺 Européen / international" },
+  { v: "autre", t: "🌍 Autre marché" },
 ];
 
 /* ── mesures pixel dans le navigateur ─────────────────────────── */
@@ -632,15 +641,14 @@ function deduireRole(m) {
   return (m.partBleu > 20 || (m.partBleuCentreImage || 0) > 16) ? "verso" : "recto";
 }
 
-/* ── suggestion d'édition du dos (japonais / international) ──────
-   Repère de couleur seulement, pas une lecture de texte : le dos
-   japonais est décrit comme plus sombre et plus saturé que le dos
-   international, plus clair. Seuil choisi au jugé, jamais mesuré sur
-   un vrai échantillon — c'est pour ça que l'appli l'affiche comme une
-   suggestion modifiable, jamais comme un fait acquis.               */
-function suggererEdition(m) {
-  if (Math.max(m.partBleu || 0, m.partBleuCentreImage || 0) < 15) return "indetermine"; // pas assez de bleu pour juger
-  return m.satBleu >= 58 ? "japonaise" : "internationale";
+/* ── famille de dos ─────────────────────────────────────────────
+   IMPORTANT : on ne déduit plus Japon / Chine / Europe depuis une simple
+   saturation bleue. Le vrai Old Back japonais fourni en régression tombe
+   justement dans une zone qui pouvait être prise pour un dos international.
+   La famille exacte du dos est donc identifiée par le modèle à partir du
+   dessin + du recto, puis peut être corrigée manuellement dans l'interface. */
+function suggererEdition() {
+  return "indetermine";
 }
 
 function redimensionner(img, max = 1400, q = 0.85) {
@@ -855,64 +863,66 @@ function scorer(controles, identification, confiance = 100) {
    logo). Une lumière globale ou une balance des blancs imparfaite
    affecte les trois ; un bleu effondré alors que rouge/jaune restent
    francs est un signal beaucoup plus robuste.                         */
-function controlesDosDeterministes(photos) {
+function controlesDosDeterministes(photos, identification) {
   const controles = [];
+  const marche = normaliserMarche(identification);
+  const familleIdentifiee = normaliserFamilleDos(identification, photos);
 
   for (const p of Array.isArray(photos) ? photos : []) {
     const m = p?.m || {};
-    // Double sécurité : même si le rôle a été mal choisi dans l'UI, la signature
-    // visuelle Poké Ball + grand champ bleu permet encore d'activer le garde-fou.
     const signatureDos = (Number(m.partBleuCentreImage || 0) >= 18 && Number(m.partBlancCoeurImage || 0) >= 4);
     if (p?.role !== "verso" && !signatureDos) continue;
 
+    // La famille choisie manuellement sur cette photo prime ; sinon on utilise
+    // l'identification globale du modèle. Jamais de seuil international sur un
+    // Japanese Old Back ou un dos japonais moderne.
+    const famillePhoto = p?.edition && p.edition !== "indetermine" ? p.edition : familleIdentifiee;
+    const estDosJaponais = famillePhoto === "japonaise_old" || famillePhoto === "japonaise_moderne";
+    if (estDosJaponais || marche === "japonais") continue;
+
+    // Chinois et européen/international partagent la famille de dos internationale.
+    // Si le marché reste indéterminé, on exige que la famille du dos ait été
+    // explicitement reconnue comme internationale avant d'appliquer un coupe-circuit.
+    const profilInternational = famillePhoto === "internationale" || marche === "chinois" || marche === "europeen" || marche === "autre";
+    if (!profilInternational) continue;
+
     const bleuPresent = Math.max(Number(m.partBleu || 0), Number(m.partBleuCentreImage || 0), Number(m.partBleuDos || 0)) >= 18;
     const blancPresent = Number(m.partBlancCoeurImage || 0) >= 4;
-
-    // Priorité aux mesures de la ROI reconstruite à partir du motif bleu. Elles
-    // excluent beaucoup mieux le fond chaud que l'ancien bbox global.
     const satBleu = Number(m.satBleuDos || m.satBleu || 0);
     const satJaune = Number(m.satJauneDos || m.satJaune || 0);
     const satRouge = Number(m.satRougeDos || m.satRougeCentre || 0);
     const ref = Math.max(satJaune, satRouge);
     const ecart = Number(m.contrasteSatDosROI || 0) || (Number.isFinite(Number(m.contrasteSatDos))
-      ? Number(m.contrasteSatDos)
-      : Math.round((ref - satBleu) * 10) / 10);
+      ? Number(m.contrasteSatDos) : Math.round((ref - satBleu) * 10) / 10);
     const ratio = Number(m.ratioBleuRefDos || 0) || (ref > 0 ? satBleu / ref : 0);
 
     if (!bleuPresent || !blancPresent || satBleu <= 0 || ref <= 0) continue;
 
-    /* Un faux délavé peut garder exactement le bon dessin. Le signal robuste est
-       relatif : dans LA MÊME photo, les encres jaune/rouge restent franches alors
-       que le bleu s'effondre. Le Rayquaza de régression est ~42-43 % de bleu pour
-       ~70 %+ dans la ROI du dos. L'ancien seuil regardait une référence contaminée
-       par la main et obtenait ~59,8 %, ratant la règle de 0,2 point. */
     const effondrementFranc = satBleu <= 47 && ref >= 57 && ecart >= 14 && ratio <= .78;
     const effondrementMassif = satBleu <= 50 && ref >= 64 && ecart >= 20 && ratio <= .76;
 
     if (effondrementFranc || effondrementMassif) {
       controles.push({
         zone: "Dos",
-        critere: "Colorimétrie relative du bleu",
+        critere: "Colorimétrie relative du bleu · profil international",
         categorie: "difficile",
         gravite: "redhibitoire",
-        observation: `Bleu ${satBleu}% contre ${Math.round(ref * 10) / 10}% sur rouge/jaune dans la zone du dos (écart ${Math.round(ecart * 10) / 10} pts, ratio ${Math.round(ratio * 100)}%). Les blancs centraux restent plausibles : le bleu est anormalement délavé relativement aux autres encres de la même photo.`,
+        observation: `Profil ${marche === "chinois" ? "chinois" : marche === "europeen" ? "européen/international" : "international"} : bleu ${satBleu}% contre ${Math.round(ref * 10) / 10}% sur rouge/jaune dans la même zone (écart ${Math.round(ecart * 10) / 10} pts, ratio ${Math.round(ratio * 100)}%). Ce seuil n'est jamais utilisé sur un dos japonais.`,
         verdict: "suspect",
-        source: "mesure_locale_roi",
+        source: "mesure_locale_roi_international",
       });
       continue;
     }
 
-    // Zone d'alerte : empêche un verdict rassurant sans sur-condamner les photos
-    // fortement compressées ou éclairées de manière atypique.
     if (satBleu <= 54 && ref >= 55 && ecart >= 10 && ratio <= .84) {
       controles.push({
         zone: "Dos",
-        critere: "Colorimétrie relative du bleu",
+        critere: "Colorimétrie relative du bleu · profil international",
         categorie: "difficile",
         gravite: "forte",
-        observation: `Bleu ${satBleu}% sensiblement moins saturé que les repères rouge/jaune (${Math.round(ref * 10) / 10}%, écart ${Math.round(ecart * 10) / 10} pts, ratio ${Math.round(ratio * 100)}%). Une meilleure photo du dos est requise.`,
+        observation: `Profil international : bleu ${satBleu}% moins saturé que les repères rouge/jaune (${Math.round(ref * 10) / 10}%, écart ${Math.round(ecart * 10) / 10} pts). Demander une meilleure photo du dos avant achat.`,
         verdict: "suspect",
-        source: "mesure_locale_roi",
+        source: "mesure_locale_roi_international",
       });
     }
   }
@@ -941,8 +951,11 @@ function fusionnerControles(modele, locaux) {
    n'affiche aucune conclusion. Deux points ne font pas une loi.  */
 const MIN_CALIB = 3;
 
-function calibration(historique) {
-  const etiq = historique.filter((e) => e.verite === "vraie" || e.verite === "fausse");
+function calibration(historique, marcheFiltre = null) {
+  const base = marcheFiltre
+    ? historique.filter((e) => normaliserMarche(e?.rapport?.identification) === marcheFiltre)
+    : historique;
+  const etiq = base.filter((e) => e.verite === "vraie" || e.verite === "fausse");
   const vraies = etiq.filter((e) => e.verite === "vraie");
   const fausses = etiq.filter((e) => e.verite === "fausse");
 
@@ -997,53 +1010,64 @@ function calibration(historique) {
 const SAVOIR = `
 CONNAISSANCES DE RÉFÉRENCE (état 2026)
 
-Dimensions communes : 63 × 88 mm, poids 1,70 à 1,80 g. Les contrefaçons tombent le plus souvent entre 1,2 et 1,5 g, ou au contraire entre 2,0 et 2,5 g, parce que le carton n'est pas le bon. Les sources divergent sur l'épaisseur exacte : ne t'appuie pas dessus.
+PRINCIPE ABSOLU — DÉTECTER LE PROFIL AVANT DE JUGER
+Tu ne dois jamais appliquer un seuil visuel universel à toutes les cartes Pokémon. Commence par identifier le marché d'impression à partir du RECTO et de la carte précise :
+- 🇯🇵 JAPONAIS : kana / kanji, références et mise en page japonaises.
+- 🇨🇳 CHINOIS : sinogrammes ; précise si possible simplifié (Chine continentale) ou traditionnel (Taïwan / Hong Kong).
+- 🇪🇺 EUROPÉEN / INTERNATIONAL LATIN : alphabet latin ; précise français, anglais, allemand, espagnol, italien, portugais, etc.
+- AUTRE : coréen, thaï, indonésien ou autre marché identifiable.
+Le dos n'est qu'un second indice. Les dos chinois, coréens et occidentaux appartiennent à la famille internationale et ne permettent PAS de distinguer ces marchés entre eux.
 
-MARQUEUR D'ÉDITION AU DOS
-Le Japon a son PROPRE dos, différent de tout le reste du monde, et ce depuis 1996 — pas seulement sur les tirages anciens. Dos japonais : bleu plus sombre et plus saturé, contour de la Poké Ball plus épais, bouton/charnière positionné correctement depuis 2001, bande grise en bordure de carte, et la balle est représentée immobile (elle ne semble pas tournoyer). Le texte en arc au-dessus de la balle dit « POCKET MONSTERS » sur les tirages de 1996 à 2001, puis « Pokémon » ensuite — mais le dessin reste japonais dans les deux cas, ce changement de texte ne signifie pas un alignement sur l'international.
-TOUT le reste du monde (français, anglais, allemand, espagnol, italien, chinois simplifié, chinois traditionnel, coréen, etc.) partage un seul et même dos international, inchangé depuis 1999 : bleu plus clair, contour de balle plus fin, effet de tournoiement autour de la balle, bordure jaune/beige.
-Conséquence pour le contrôle de cohérence : le dos dit seulement « japonais » ou « pas japonais ». S'il est japonais, le recto DOIT être en japonais (kana/kanji) ; s'il est international, le recto ne doit PAS être en japonais, mais peut être dans n'importe quelle autre langue. Un décalage dans l'un ou l'autre sens est une incohérence de catalogue à part entière, pas un simple doute.
-En revanche le dos ne permet jamais de distinguer chinois, coréen ou une langue européenne entre eux — pour ça, c'est l'écriture du recto qu'il faut lire, et c'est un repère très fiable, visible au premier coup d'œil : kana/kanji = japonais, sinogrammes (simplifiés ou traditionnels) = chinois, hangul = coréen, alphabet latin = langue européenne (français, anglais, allemand, espagnol, italien…).
+FAMILLES DE DOS
+1) JAPONAIS OLD BACK — 1996 à juillet 2001 : design « POCKET MONSTERS CARD GAME », visuellement très différent du dos international. Ne lui applique JAMAIS les seuils colorimétriques du dos international.
+2) JAPONAIS MODERNE — à partir de Pokémon VS (juillet 2001) : nouveau dos japonais. Il appartient à la même grande génération visuelle que le design moderne, mais conserve des différences propres aux impressions japonaises. Ne le traite pas comme un clone pixel-par-pixel du dos occidental.
+3) INTERNATIONAL — langues occidentales, chinois, coréen et plusieurs autres marchés : famille de dos bleue à Poké Ball et tourbillon. Un même dos international ne prouve jamais une langue ou un pays précis.
 
-BASE SET JAPONAIS 1996-1998
-Copyright : mentions Nintendo, GAMEFREAK, Creatures avec millésimes 1996-1997 selon le tirage. Bordures blanches plus étroites que sur les rééditions occidentales. Carton légèrement plus fin que le moderne. Holo starburst d'époque, pas de texture en relief.
-Signature chromatique : jaunes chauds légèrement crémeux, rouges tirant sur le brique, bleus du dos profonds sans jamais être fluorescents.
-Les faux ratent dans LES DEUX SENS : soit trop vifs (jaune citron agressif, rouge néon), soit trop ternes et délavés. Une saturation anormalement BASSE est un signal au même titre qu'une saturation haute.
+PROFIL 🇯🇵 JAPONAIS
+- Détermine d'abord OLD BACK vs JAPONAIS MODERNE à partir de l'époque et du dessin du dos.
+- Vintage 1996-2001 : pas de texture embossée moderne ; analyse surtout impression, holo attendu pour le tirage précis, géométrie, copyright, police japonaise, gamme colorimétrique et cohérence Old Back.
+- Une saturation plus basse OU plus haute peut exister suivant photo, usure et impression : n'utilise jamais « bleu plus sombre = vrai » ou « bleu plus vif = faux » comme règle unique.
+- Pour une carte japonaise moderne, vérifie le motif holo / texture / bordure attendu pour CETTE rareté et CETTE extension, pas celui d'une version occidentale homonyme.
 
-WIZARDS OF THE COAST 1999-2003
-Base Set anglais : la ligne de copyright mentionne Nintendo, Creatures, GAME FREAK avec les millésimes 1995, 96, 98, 99, et Wizards pour 1999. Le nom du Pokémon porte un ®. Le logo Nintendo porte TM ou ®. Le format de la carte est imprimé en bas à gauche.
-1ère édition : tampon à gauche de l'illustration ET absence d'ombre portée au cadre. Une carte estampillée 1ère édition qui porte une ombre portée est fausse, sans discussion.
-Fautes classiques des contrefaçons : orthographe du copyright (Nintedo, Gamefrek), symboles ® ou TM absents, accent manquant à Pokémon, coquilles dans l'entrée Pokédex.
+PROFIL 🇨🇳 CHINOIS
+- Distingue chinois simplifié et traditionnel si les caractères et le set le permettent.
+- Le dos est de famille internationale : ne l'utilise pas pour prétendre que la carte est européenne.
+- Les sets, numérotations, symboles de rareté, finitions holo et dates de sortie peuvent différer du Japon et de l'Occident. Compare la carte au tirage chinois précis ; une caractéristique correcte sur la version japonaise n'est pas automatiquement correcte sur la version chinoise.
+- Les contrôles de texte portent sur les caractères, la ponctuation, les symboles d'énergie, le numéro et le marquage du set réellement imprimé en chinois.
 
-ÈRE E-CARD À ÉPÉE-BOUCLIER 2002-2022
-Motifs holographiques spécifiques par rareté : cosmos sur les holos standard, gravure sur les cartes V, textures pleine illustration sur les full arts.
+PROFIL 🇪🇺 EUROPÉEN / INTERNATIONAL LATIN
+- Identifie la langue exacte : français, anglais, allemand, espagnol, italien, portugais, etc.
+- Pour les cartes Wizards / vintage, respecte les détails propres à l'ère et au tirage ; pour les cartes modernes, respecte le motif holo et la texture de la rareté précise.
+- Le garde-fou colorimétrique local du dos international n'est applicable qu'à cette famille de dos, jamais au Japanese Old Back.
 
-ÈRE MODERNE, ÉCARLATE-VIOLET ET MÉGA-ÉVOLUTION 2023-2026
-Cibles privilégiées des faussaires : Méga-Évolution ex, Special Illustration Rares, alt arts. Motif cosmos ou matrice de points. La texture en relief doit exister là où la rareté l'impose.
-Défauts fréquents relevés en 2026 : carton rugueux, holographie décentrée, graisse de police erronée, tranches irrégulières.
+DIMENSIONS ET MESURES
+63 × 88 mm environ. Le poids, l'épaisseur, la texture et la couche interne varient assez selon époque, finition et marché pour qu'aucune valeur universelle ne doive suffire à certifier une carte. Toute mesure physique doit idéalement être comparée à une authentique du même set / marché / rareté.
 
-TEINTES QUI TRAHISSENT, TOUTES ÉPOQUES
-Jaunes qui virent au verdâtre, rouges qui virent à l'orangé, bleus qui virent au grisâtre. L'écart est faible mais constant sur toute la carte.
+WIZARDS OF THE COAST / VINTAGE OCCIDENTAL 1999-2003
+Les détails de copyright, marqueurs 1st Edition, shadowless, symboles de set et holo sont très discriminants lorsqu'ils sont lisibles. Un texte exact est toutefois reproductible par une bonne copie : conforme ne prouve rien ; incohérent condamne.
 
-HOLOGRAPHIE
-Le motif doit changer avec l'angle et correspondre à l'époque et à la rareté. Un film arc-en-ciel générique, identique quel que soit l'angle, plat et sans profondeur, est un faux. Certains faux posent un simple foil argenté avec une couleur imprimée par-dessus.
+HOLOGRAPHIE ET TEXTURE
+Le motif doit correspondre à la carte précise, à son marché, à son époque et à sa rareté. N'invente jamais une texture : de nombreuses cartes vintage authentiques sont totalement lisses. Une photo fixe peut montrer qu'un motif est impossible, mais ne peut pas toujours confirmer son comportement angulaire.
+
+IMPRESSION
+À fort grossissement, compare trame, contours de glyphes, noirs, aplats et éventuelle texture à ce qui est attendu pour le tirage précis. Sans grossissement suffisant, marque « non_verifiable » plutôt que d'inventer une rosace.
 
 CATALOGUE
-Une carte annoncée 1/1 ou en tirage unique qui n'apparaît dans aucune base publique doit être écartée. Les coffrets de notation contrefaits existent aussi : un boîtier PSA ou BGS ne garantit pas tout.
+Une combinaison nom / numéro / extension / langue / marché impossible est rédhibitoire. En revanche, l'absence d'une carte d'une base tierce n'est pas, seule, une preuve de contrefaçon : les catalogues peuvent être incomplets, notamment selon les marchés asiatiques.
 `.trim();
 
 /* Ordonnés par pouvoir discriminant réel en 2026, pas par commodité.
    Aucun ne se fait depuis une photo — c'est précisément le propos. */
 const TESTS_PHYSIQUES = [
   {
-    titre: "Texture au doigt",
-    force: "Le plus fiable aujourd'hui",
-    texte: "Passez un ongle sur la face avant. Une carte authentique offre un grain fin, presque un microsillon, avec une légère résistance sonore. Les contrefaçons glissent : lisses, cireuses ou brillantes. Certaines impriment un motif de texture qui trompe l'œil sous verre, mais la surface reste plate au toucher. Reproduire un carton réellement gaufré à grande échelle reste coûteux, et c'est ce test qui rattrape les faux ayant passé la lumière.",
+    titre: "Surface et texture attendues",
+    force: "À adapter à la carte précise",
+    texte: "Ne cherchez une texture en relief que si cette rareté, cette époque et ce marché doivent réellement en avoir une. Une vintage japonaise Old Back ou de nombreuses holos anciennes authentiques peuvent être lisses. Comparez grain, vernis et relief à une authentique du même tirage ; une texture moderne inventée sur une carte qui devrait être lisse est au contraire suspecte.",
   },
   {
-    titre: "Pesée",
-    force: "Très fiable, demande une balance",
-    texte: "1,70 à 1,80 g pour une carte standard, un peu plus pour une holo ou une texturée. Les contrefaçons manquent la cible de 0,2 g ou davantage, par défaut comme par excès. Une balance au centième coûte une quinzaine d'euros. Pesez d'abord cinq cartes dont vous êtes sûr pour situer votre propre référence, puis la carte suspecte : un écart de plus de 0,05 g avec ce groupe mérite la méfiance.",
+    titre: "Pesée comparative",
+    force: "Utile avec une vraie référence",
+    texte: "Évitez une plage de poids universelle : finition holo, époque et marché peuvent déplacer la mesure. Pesez plusieurs cartes authentiques du même set, marché et type de finition avec une balance au centième, puis comparez la carte suspecte à ce groupe. Un écart net et répétable devient intéressant ; une valeur isolée ne certifie rien.",
   },
   {
     titre: "Holographie sous angle variable",
@@ -1052,8 +1076,8 @@ const TESTS_PHYSIQUES = [
   },
   {
     titre: "Tranche et lumière",
-    force: "Filtre de premier passage seulement",
-    texte: "Placez la carte devant une lampe puissante. Une carte authentique est un sandwich à noyau noir qui bloque presque toute la lumière. Attention : les contrefaçons de 2025 et 2026 ajoutent désormais leur propre couche noire. Un échec règle la question, une réussite ne prouve plus rien. C'est un tri, pas un verdict.",
+    force: "Filtre secondaire",
+    texte: "Comparez la tranche et la transmission de lumière à une authentique du même marché et de la même époque. La structure interne n'est pas un critère universel suffisant, et certaines contrefaçons modernes imitent une couche sombre. Un écart évident peut condamner ; une apparence correcte ne certifie pas.",
   },
   {
     titre: "Trame d'impression à la loupe",
@@ -1062,16 +1086,12 @@ const TESTS_PHYSIQUES = [
   },
 ];
 
-/* ── cohérence dos / langue ────────────────────────────────────
-   Double vérification indépendante du jugement du modèle : le Japon
-   a son propre dos depuis 1996 (bleu plus sombre, balle immobile,
-   bordure grise), quel que soit le texte qui y est écrit ; tout le
-   reste du monde partage un seul dos international. Le dos ne dit
-   donc que "japonais" ou "pas japonais" — jamais lequel des autres
-   pays — et doit rester cohérent avec l'écriture lue au recto dans
-   les deux sens. On ne fait confiance ni exclusivement au modèle ni
-   exclusivement à ce recoupement : les deux se corrigent l'un
-   l'autre.                                                        */
+/* ── cohérence profil / famille de dos ─────────────────────────
+   On sépare désormais le marché d'impression (japonais, chinois,
+   européen/international, autre) de la famille du dos. Le Japon a
+   deux familles documentées (Old Back puis dos japonais moderne),
+   tandis que chinois et occidental utilisent la famille internationale.
+   Le dos seul ne permet donc jamais de conclure « chinois » ou « européen ». */
 /* ── correspondance langue → code TCGdex ─────────────────────────
    Best-effort : sert uniquement à surligner, dans la liste renvoyée
    par le catalogue, la langue que Claude a lue sur le recto. Si le
@@ -1097,14 +1117,76 @@ const LIBELLE_LANGUE = {
   pt: "Portugais", ja: "Japonais", "zh-tw": "Chinois (traditionnel)", id: "Indonésien", th: "Thaï",
 };
 
-function incoherenceDos(identification) {
-  const dos = identification?.edition_dos;
-  if (!dos || dos === "non_visible") return null;
+function normaliserMarche(identification, force = "auto") {
+  if (force && force !== "auto") return force;
+  const brut = String(identification?.marche || "").toLowerCase();
+  if (/japon/.test(brut)) return "japonais";
+  if (/chin|chinois/.test(brut)) return "chinois";
+  if (/europ|occident|international.*latin/.test(brut)) return "europeen";
+  if (/autre|cor[ée]|thai|thaï|indon/.test(brut)) return "autre";
+
   const langue = String(identification?.langue || "").toLowerCase();
-  const japonais = /japon|jp\b/.test(langue);
-  const autreLangue = /fran[cç]ais|anglais|allemand|italien|espagnol|cor[ée]en|chinois|n[ée]erlandais|portugais/.test(langue);
-  if (dos === "japonaise" && autreLangue) return true;
-  if (dos === "internationale" && japonais) return true;
+  if (/japon/.test(langue)) return "japonais";
+  if (/chinois|mandarin|simplifi|traditionnel/.test(langue)) return "chinois";
+  if (/fran[cç]ais|anglais|allemand|italien|espagnol|n[ée]erlandais|portugais/.test(langue)) return "europeen";
+  if (/cor[ée]en|tha[iï]|indon[ée]sien/.test(langue)) return "autre";
+  return "indetermine";
+}
+
+function normaliserFamilleDos(identification, photos = []) {
+  const brut = String(identification?.famille_dos || "").toLowerCase();
+  if (/old|ancien|1996|2001/.test(brut) && /jap/.test(brut)) return "japonaise_old";
+  if (/jap/.test(brut) && /modern|moderne|nouveau/.test(brut)) return "japonaise_moderne";
+  if (/international|occidental|western/.test(brut)) return "internationale";
+
+  const ed = String(identification?.edition_dos || "").toLowerCase();
+  if (ed === "japonaise") {
+    const ep = String(identification?.epoque || "");
+    const an = Number((ep.match(/(19|20)\d{2}/) || [])[0] || 0);
+    if (an && an <= 2000) return "japonaise_old";
+    if (an && an >= 2002) return "japonaise_moderne";
+    return "indetermine"; // 2001 est l'année de transition : ne pas deviner.
+  }
+  if (ed === "internationale") return "internationale";
+
+  const manuelle = (Array.isArray(photos) ? photos : [])
+    .filter((p) => p?.role === "verso")
+    .map((p) => p?.edition)
+    .find((v) => v && v !== "indetermine");
+  return manuelle || "indetermine";
+}
+
+function libelleMarche(identification) {
+  const m = normaliserMarche(identification);
+  const base = m === "japonais" ? "🇯🇵 Japonais"
+    : m === "chinois" ? "🇨🇳 Chinois"
+    : m === "europeen" ? "🇪🇺 Européen / international"
+    : m === "autre" ? "🌍 Autre marché" : "🌐 Marché indéterminé";
+  const v = String(identification?.variante_marche || "").trim();
+  return v ? `${base} · ${v}` : base;
+}
+
+function libelleFamilleDos(identification) {
+  const f = normaliserFamilleDos(identification);
+  if (f === "japonaise_old") return "Old Back japonais";
+  if (f === "japonaise_moderne") return "dos japonais moderne";
+  if (f === "internationale") return "dos international";
+  return "dos non déterminé";
+}
+
+function incoherenceDos(identification) {
+  const famille = normaliserFamilleDos(identification);
+  if (!famille || famille === "indetermine") return null;
+  const marche = normaliserMarche(identification);
+  if (marche === "indetermine") return null;
+
+  if ((famille === "japonaise_old" || famille === "japonaise_moderne") && marche !== "japonais") return true;
+  if (famille === "internationale" && marche === "japonais") return true;
+
+  const ep = String(identification?.epoque || "");
+  const an = Number((ep.match(/(19|20)\d{2}/) || [])[0] || 0);
+  if (famille === "japonaise_old" && an >= 2002) return true;
+  if (famille === "japonaise_moderne" && an > 0 && an <= 2000) return true;
   return false;
 }
 
@@ -1190,6 +1272,7 @@ export default function Scanner() {
   const [photos, setPhotos] = useState([]);
   const [annonce, setAnnonce] = useState({ url: "", titre: "", prix: "", texte: "" });
   const [approfondi, setApprofondi] = useState(false);
+  const [marcheForce, setMarcheForce] = useState("auto");
   const [journal, setJournal] = useState([]);
   const [occupe, setOccupe] = useState(false);
   const [collecte, setCollecte] = useState(false);
@@ -1216,6 +1299,12 @@ export default function Scanner() {
   );
 
   const calib = useMemo(() => calibration(historique), [historique]);
+  const calibParMarche = useMemo(() => ({
+    japonais: calibration(historique, "japonais"),
+    chinois: calibration(historique, "chinois"),
+    europeen: calibration(historique, "europeen"),
+    autre: calibration(historique, "autre"),
+  }), [historique]);
 
   const etiqueter = (id, verite) =>
     majHistorique(historique.map((e) => e.id === id ? { ...e, verite: e.verite === verite ? null : verite } : e));
@@ -1337,7 +1426,7 @@ export default function Scanner() {
 
       const decrire = (p, i, prefixe) => {
         const indiceDos = p.role === "verso" && p.edition && p.edition !== "indetermine"
-          ? ` | suggestion automatique d'édition du dos (à vérifier toi-même sur l'image, pas un fait acquis) : ${p.edition}`
+          ? ` | famille de dos indiquée manuellement par l'utilisateur : ${p.edition}`
           : "";
         const mesureDos = p.role === "verso"
           ? ` | bleu détecté ${p.m.partBleu ?? 0}% (centre photo ${p.m.partBleuCentreImage ?? 0}%) | saturation bleu globale ${p.m.satBleu ?? 0}% | ROI dos: bleu ${p.m.satBleuDos ?? 0}%, jaune ${p.m.satJauneDos ?? 0}%, rouge ${p.m.satRougeDos ?? 0}%, écart ${p.m.contrasteSatDosROI ?? 0} pts, ratio bleu/réf ${p.m.ratioBleuRefDos ?? 0} | teinte bleu ${p.m.teinteBleu ?? 0}° | luminosité bleu ${p.m.lumBleu ?? 0}% | balance couleur ${p.m.balanceCouleur || "brute"}`
@@ -1357,13 +1446,12 @@ export default function Scanner() {
         ? Math.round((retenues.reduce((a, p) => a + (p.m.satMoy || 0), 0) / retenues.length) * 10) / 10
         : 0;
 
-      const calibTexte = calib.exploitable
-        ? `\n\nRÉFÉRENCE MESURÉE SUR CETTE COLLECTION — ${calib.nSatVraies} cartes confirmées authentiques et ${calib.nSatFausses} confirmées fausses, photographiées dans des conditions comparables :
-saturation moyenne des authentiques : ${calib.satVraies} % (écart-type ${calib.ecartVraies})
-saturation moyenne des contrefaçons : ${calib.satFausses} % (écart-type ${calib.ecartFausses})
-séparation des deux populations : ${calib.separation} ${calib.concluante ? "— écart franc, ce critère est exploitable ici" : "— les deux nuages se recouvrent, ce critère reste faible et ne doit pas peser lourd"}
-la carte analysée mesure ${satSujet} %.
-Utilise cette référence plutôt que des seuils génériques, mais uniquement au poids que la séparation justifie.`
+      const calibTexte = Object.entries(calibParMarche)
+        .filter(([, c]) => c.exploitable)
+        .map(([marche, c]) => `\nPROFIL ${marche.toUpperCase()} — ${c.nSatVraies} authentiques / ${c.nSatFausses} fausses : saturation ${c.satVraies}% vs ${c.satFausses}%, séparation ${c.separation}${c.concluante ? " (exploitable)" : " (faible)"}.`)
+        .join("");
+      const calibBloc = calibTexte
+        ? `\n\nCALIBRATION LOCALE PAR MARCHÉ — n'utilise QUE la ligne correspondant au profil détecté. Ne mélange jamais Japon / Chine / Europe.${calibTexte}\nLa carte analysée mesure ${satSujet}% de saturation moyenne.`
         : "";
 
       const consigne = `Tu es expert en authentification de cartes Pokémon TCG à partir de photos d'annonces de seconde main.
@@ -1379,38 +1467,44 @@ GRAVITÉ DES ANOMALIES — champ obligatoire "gravite" pour chaque contrôle :
 - "faible" : détail ambigu, compatible avec photo/éclairage/usure.
 - "forte" : défaut net, difficile à expliquer autrement qu'une copie.
 - "redhibitoire" : contradiction matérielle ou visuelle impossible sur le tirage authentique. Un seul contrôle suspect + redhibitoire doit suffire à condamner la carte.
-Pour le DOS INTERNATIONAL en particulier : juge les couleurs RELATIVEMENT aux zones blanches/neutres de la Poké Ball et aux autres couleurs de la même photo. Si les blancs restent plausibles mais que le champ bleu est franchement délavé, gris-bleu, cyan/turquoise, anormalement uniforme ou d'une intensité manifestement incompatible avec le dos Pokémon international, ce n'est pas une simple variation d'éclairage. Classe COLORIMÉTRIE = suspect, gravite = redhibitoire si l'écart est massif et clairement visible. En revanche, si toute la photo porte une dominante globale cohérente, n'en fais pas un verdict absolu.
+AVANT TOUT VERDICT, DÉTECTE LE PROFIL RÉGIONAL ET LA FAMILLE DU DOS.
+Profil demandé par l'utilisateur : ${marcheForce === "auto" ? "AUTO — détecte-le toi-même à partir du recto" : marcheForce.toUpperCase() + " — l'utilisateur force ce profil"}.
+N'utilise JAMAIS un seuil de dos international sur un Japanese Old Back ou un dos japonais moderne. Pour un dos international seulement, juge les couleurs relativement aux blancs/neutres de la Poké Ball et aux autres encres de la même photo. Si le profil reste indéterminé, préfère un signal fort à un verdict rédhibitoire automatique.
 
 Mesures effectuées sur les pixels :
 ${contexte}
 
 Lisibilité : <8 px/mm la carte est à peine distinguable ; 8-15 gros éléments ; 15-30 le texte des attaques ; 30-60 micro-typographie ; >60 trame d'impression. Cette échelle parle de FINESSE — texte, trame, micro-détail. La couleur d'ensemble d'une zone (le bleu du dos, le rouge de la Poké Ball, le jaune de la bordure) se juge sur une moyenne de milliers de pixels : elle reste jugeable même à 8-15 px/mm ou sur un seul angle fixe. Ne te sers JAMAIS d'une densité faible ou d'un angle unique comme excuse pour classer la colorimétrie "non_verifiable" — ça, c'est vrai pour l'holographie (qui a besoin de plusieurs angles) et pour la trame d'impression (qui a besoin de finesse), pas pour une teinte dominante.
 Biais de perspective : 1.00 = photo bien à plat. Au-delà de 1.10, le centrage, l'épaisseur de bordure et le crénage sont déformés — marque ces critères "non_verifiable".
-Saturation : la balance de couleur n'est appliquée que si le pourtour de l'image est réellement assez neutre ; sinon les mesures restent brutes (voir "balance couleur" dans chaque photo). Attention, l'écart joue DANS LES DEUX SENS : les contrefaçons sont soit trop vives, soit trop ternes et délavées par rapport à la carte d'époque. Une saturation anormalement basse est un signal au même titre qu'une saturation haute.${calibTexte}${refTexte}
+Saturation : la balance de couleur n'est appliquée que si le pourtour de l'image est réellement assez neutre ; sinon les mesures restent brutes (voir "balance couleur" dans chaque photo). Attention, l'écart joue DANS LES DEUX SENS : les contrefaçons sont soit trop vives, soit trop ternes et délavées par rapport à la carte d'époque. Une saturation anormalement basse est un signal au même titre qu'une saturation haute.${calibBloc}${refTexte}
 
 ${SAVOIR}
 
 Annonce : titre="${annonce.titre || "non fourni"}" | prix="${annonce.prix || "non fourni"}" | description="${(annonce.texte || "non fournie").slice(0, 700)}"
 
 Méthode :
-1. IDENTIFIER : nom, extension, numéro, rareté, époque. Le "nom" doit être copié EXACTEMENT tel qu'il est imprimé sur le recto, dans sa langue et son orthographe d'origine — jamais traduit ni francisé (une carte anglaise nommée "Charizard" reste "Charizard", pas "Dracaufeu" : un nom traduit rend le contrôle catalogue muet). Pour la langue, identifie la famille d'écriture du recto — c'est un repère visuel immédiat, sans ambiguïté : kana/kanji = japonais, sinogrammes = chinois (simplifié ou traditionnel), hangul = coréen, alphabet latin = langue européenne (français, anglais, allemand, espagnol, italien…).
-2. COHÉRENCE CATALOGUE : cette combinaison existe-t-elle réellement ? numéro vs total de l'extension, rareté vs numéro, illustrateur, ligne de copyright vs époque, holo vs époque, carte imprimée dans cette langue. Si une photo du dos est disponible, regarde s'il porte le dos exclusif japonais (bleu plus sombre et saturé, contour de balle épais, balle immobile, bordure grise) ou le dos international partagé par tout le reste du monde (bleu plus clair, contour fin, effet de tournoiement, bordure jaune) — le texte en arc aide aussi ("POCKET MONSTERS" ou "Pokémon" = japonais dans les deux cas, à condition que le reste du dessin soit bien japonais). Un dos japonais avec un recto écrit dans une autre écriture (ou l'inverse : dos international avec un recto en japonais) est une incohérence de catalogue à part entière — le dos ne distingue en revanche jamais le chinois, le coréen ou une langue européenne entre eux, seule l'écriture du recto le fait. Un élément inventé est rédhibitoire. (catégorie "reproductible" : conforme ne prouve rien, incohérent condamne)
-3. IMPRESSION : trame, bavures, halo autour des glyphes, niveau de noir — uniquement si la densité le permet. ("difficile")
-4. COLORIMÉTRIE : saturation et gamut cohérents avec l'époque de la carte — vérifiable sur une seule photo, quelle que soit sa résolution (voir remarque sur la lisibilité). Regarde en particulier le dos : un bleu trop pâle/délavé, grisâtre, cyan/turquoise, néon, trop uniforme ou très différent du bleu riche attendu est un signal réel. Compare toujours cette dérive aux blancs de la Poké Ball dans LA MÊME image : si les blancs sont normaux alors que le bleu est radicalement faux, l'éclairage n'explique pas l'écart. Décris précisément la dérive et utilise "redhibitoire" lorsque l'écart est massif. ("difficile")
-5. SURFACE : holographie, texture, vernis, grain du carton. ("difficile")
-6. USURE : coins, tranches, rayures cohérents avec l'âge annoncé. Une carte présentée comme ancienne mais d'aspect neuf est suspecte ; une usure authentique est un signal positif réel. ("difficile")
-7. GÉOMÉTRIE : centrage, bordures, coupe — seulement si le biais est inférieur à 1.10. ("difficile")
-8. TEXTE ET MISE EN PAGE : PV, coût et dégâts des attaques, faiblesse, résistance, retraite, texte d'aptitude. Si tu reconnais cette carte précise (tu la connais probablement si elle est très collectionnée — Dracaufeu/Charizard, Pikachu, Mewtwo, etc.), compare CHAQUE valeur lisible à ce que tu sais du vrai tirage plutôt que de la lire passivement : nombre exact de symboles d'énergie pour chaque attaque, dégâts, PV, icône et valeur de résistance, coût de retraite. Un chiffre ou un symbole faux est une preuve reproductible mais rédhibitoire dès lors que tu peux vraiment le lire à l'écran — ne classe "non_verifiable" que ce qui est réellement illisible dans l'image, jamais ce que la densité px/mm estimée suggère d'ignorer : cette densité mesure la taille de la carte dans la photo, pas la netteté réelle du texte que tu as sous les yeux. ("reproductible")
+1. PROFIL RÉGIONAL D'ABORD : identifie le marché à partir du RECTO, pas de la couleur du dos. Kana/kanji => japonais ; sinogrammes => chinois (précise simplifié/traditionnel si possible) ; alphabet latin => européen/international latin et langue exacte ; hangul/thaï/indonésien => autre marché. Si le recto n'est pas lisible, mets indetermine.
+2. IDENTIFIER LA CARTE PRÉCISE : nom, extension, numéro, rareté, époque. Le nom doit être copié exactement tel qu'imprimé, jamais traduit. Détermine ensuite la famille du dos : japonaise_old (Pocket Monsters Card Game, 1996-juil. 2001), japonaise_moderne, internationale, ou non_visible. Le dos international ne distingue jamais chinois et européen.
+3. COHÉRENCE CATALOGUE / RÉGION : vérifie que CETTE carte existe dans CE marché et à CETTE époque avec ce numéro, cette rareté, cet illustrateur, ce copyright, cette bordure et cette finition. Une incohérence impossible est rédhibitoire.
+4. IMPRESSION : trame, bavures, halo autour des glyphes, niveau de noir — uniquement si la densité le permet. ("difficile")
+5. COLORIMÉTRIE PAR PROFIL : compare toujours à la famille de dos et au tirage détectés. Pour un dos international, le bleu peut être comparé aux autres encres de la même photo. Pour un Japanese Old Back ou un dos japonais moderne, n'applique aucun seuil international ; juge le rendu propre à cette famille et, si possible, à une référence du même tirage. ("difficile")
+6. SURFACE / HOLO / TEXTURE : uniquement ce qui est attendu pour la carte précise. Une vintage japonaise authentique peut être lisse ; l'absence de texture moderne n'est donc pas un défaut. ("difficile")
+7. USURE ET GÉOMÉTRIE : cohérence avec l'âge, coupe et bordures ; géométrie seulement si le biais photo le permet. ("difficile")
+8. TEXTE ET MISE EN PAGE : compare chaque valeur réellement lisible au tirage de CE marché. Un chiffre, symbole, caractère ou coût d'énergie impossible est reproductible mais rédhibitoire.
 9. ANNONCE : prix vs marché, vocabulaire, photos reprises d'ailleurs. ("contextuel")
 
 Règles strictes :
 - N'invente jamais un indice que tu ne peux pas voir. "non_verifiable" est un verdict honorable et attendu — mais seulement pour ce qui est vraiment illisible, pas comme option par défaut par excès de prudence. Si tu peux lire un chiffre, un symbole ou un mot dans l'image, lis-le et compare-le à ce que tu sais, même si la carte est plastifiée, dans une pochette, ou photographiée à une résolution modeste.
 - Si aucun critère "difficile" n'est vérifiable, dis-le explicitement dans le résumé : les photos ne peuvent pas établir l'authenticité, seulement la contredire.
 - Se tromper dans les deux sens coûte cher.
-- "edition_dos" : renseigne-le uniquement si une photo du dos est présente et lisible. Mets "japonaise" pour le dos exclusif japonais (bleu sombre et saturé, contour de balle épais, balle immobile, bordure grise — quel que soit le texte, "POCKET MONSTERS" ou "Pokémon"), "internationale" pour le dos unique partagé par tout le reste du monde (français, anglais, chinois, coréen…), et "non_visible" si aucun dos n'est fourni ou si le dessin est illisible — n'invente jamais cette valeur. Ce champ dit seulement "japonais" ou "pas japonais", jamais laquelle des autres langues.
+- "marche" : japonais|chinois|europeen|autre|indetermine. C'est le profil d'impression utilisé pour choisir les règles d'authentification.
+- "variante_marche" : précision courte si visible, par ex. "japonais vintage", "chinois simplifié", "chinois traditionnel", "français", "anglais".
+- "famille_dos" : japonaise_old|japonaise_moderne|internationale|non_visible. Ne déduis jamais chinois vs européen depuis le dos international.
+- "edition_dos" reste un champ de compatibilité : japonaise si famille_dos commence par japonaise_, internationale si famille_dos=internationale, sinon non_visible.
+- "epoque" : année ou intervalle court utile pour valider le dos et la finition.
 
 Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maximum. Chaînes limitées à 110 caractères, sauf "resume" et "observation" jusqu'à 280. Le "resume" tient en deux ou trois phrases :
-{"identification":{"carte":"","extension":"","numero":"","langue":"","edition_dos":"japonaise|internationale|non_visible","coherence":"coherent|incoherent|indetermine","note":""},
+{"identification":{"carte":"","extension":"","numero":"","langue":"","marche":"japonais|chinois|europeen|autre|indetermine","variante_marche":"","epoque":"","famille_dos":"japonaise_old|japonaise_moderne|internationale|non_visible","edition_dos":"japonaise|internationale|non_visible","coherence":"coherent|incoherent|indetermine","note":""},
 "controles":[{"zone":"","critere":"","categorie":"reproductible|difficile|contextuel","gravite":"faible|forte|redhibitoire","observation":"","verdict":"conforme|suspect|non_verifiable"}],
 "drapeaux":[""],"positifs":[""],
 "confiance":0,
@@ -1443,10 +1537,26 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
       if (!j) throw new Error(`Rapport illisible. Début reçu : ${texte.slice(0, 220)}`);
       if (data.stop_reason === "max_tokens") log("Réponse coupée, rapport reconstitué", "ok");
 
-      // IMPORTANT : les mesures locales sont fusionnées APRÈS la réponse IA.
-      // Ainsi, un modèle qui écrit « bleu délavé » dans le résumé mais oublie
-      // de créer le contrôle correspondant ne peut plus laisser le score à 48.
-      const controlesLocaux = controlesDosDeterministes(retenues);
+      j.identification = j.identification || {};
+      if (marcheForce !== "auto") {
+        j.identification.marche_detecte = j.identification.marche || "indetermine";
+        j.identification.marche = marcheForce;
+      }
+      const familleManuelle = retenues
+        .filter((p) => p.role === "verso" && p.edition && p.edition !== "indetermine")
+        .map((p) => p.edition)[0];
+      if (familleManuelle) {
+        j.identification.famille_dos_detectee = j.identification.famille_dos || "non_visible";
+        j.identification.famille_dos = familleManuelle;
+        j.identification.edition_dos = familleManuelle.startsWith("japonaise_") ? "japonaise" : "internationale";
+      }
+      const marcheAnalyse = normaliserMarche(j.identification, marcheForce);
+      const familleAnalyse = normaliserFamilleDos(j.identification, retenues);
+      log(`Profil ${marcheAnalyse === "japonais" ? "🇯🇵 japonais" : marcheAnalyse === "chinois" ? "🇨🇳 chinois" : marcheAnalyse === "europeen" ? "🇪🇺 européen/international" : "🌍 " + marcheAnalyse} · ${familleAnalyse}`, "ok");
+
+      // Les mesures locales sont fusionnées APRÈS l'identification régionale.
+      // Un seuil international ne peut donc plus condamner un Japanese Old Back.
+      const controlesLocaux = controlesDosDeterministes(retenues, j.identification);
       j.controles = fusionnerControles(j.controles, controlesLocaux);
       const redhibitoireLocal = controlesLocaux.some((c) => c.gravite === "redhibitoire");
       const anomalieForteLocale = controlesLocaux.some((c) => c.gravite === "forte");
@@ -1525,6 +1635,8 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
         try {
           const q = new URLSearchParams({ nom: j.identification.carte });
           if (j.identification.numero) q.set("numero", j.identification.numero);
+          const langueCatalogue = codeLangueTCGdex(j.identification.langue);
+          if (langueCatalogue) q.set("langue", langueCatalogue);
           const rc = await fetch(`/api/catalogue?${q.toString()}`);
           const dc = await rc.json();
           setCatalogue(dc);
@@ -1633,10 +1745,10 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                       </div>
                       {p.role === "verso" && (
                         <select className="ap-menu" value={p.edition || "indetermine"}
-                                aria-label={`Édition suggérée pour ${p.nom}`}
+                                aria-label={`Famille de dos pour ${p.nom}`}
                                 style={{ marginTop: 6, fontSize: 12.5, padding: "5px 8px" }}
                                 onChange={(e) => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, edition: e.target.value } : q))}>
-                          {EDITIONS.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
+                          {FAMILLES_DOS.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
                         </select>
                       )}
                       <div className="ap-meta ap-mono">
@@ -1664,6 +1776,18 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
               <label className="ap-lbl" htmlFor="ap-d">Description du vendeur</label>
               <textarea id="ap-d" className="ap-zone" value={annonce.texte}
                         onChange={(e) => setAnnonce({ ...annonce, texte: e.target.value })} />
+            </div>
+
+            <div className="ap-champ">
+              <label className="ap-lbl" htmlFor="ap-marche">Profil régional</label>
+              <select id="ap-marche" className="ap-menu" value={marcheForce}
+                      onChange={(e) => setMarcheForce(e.target.value)}>
+                {MARCHES.map((m) => <option key={m.v} value={m.v}>{m.t}</option>)}
+              </select>
+              <div className="ap-reglage-s" style={{ marginTop: 6 }}>
+                Laisse sur automatique : le recto sert à distinguer japonais, chinois et européen/international.
+                Le dos seul ne peut pas distinguer chinois et européen.
+              </div>
             </div>
 
             <div className="ap-reglage">
@@ -1756,7 +1880,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                     )}
                     {res.redhibitoireLocal && (
                       <p className="ap-meta" style={{ color: "var(--red)", marginTop: 7 }}>
-                        Garde-fou local déclenché : anomalie colorimétrique du dos mesurée indépendamment de l'IA.
+                        Garde-fou local déclenché : anomalie du dos selon le profil régional détecté.
                       </p>
                     )}
                   </div>
@@ -1776,9 +1900,10 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                       </div>
                       <div className="ap-meta" style={{ marginTop: 4 }}>
                         {res.identification.extension || "extension inconnue"} · n° {res.identification.numero || "—"} · {res.identification.langue || "—"}
-                        {res.identification.edition_dos && res.identification.edition_dos !== "non_visible" && (
-                          <> · dos {res.identification.edition_dos}</>
-                        )}
+                        {res.identification.epoque ? <> · {res.identification.epoque}</> : null}
+                      </div>
+                      <div style={{ marginTop: 7, fontSize: 13.5, fontWeight: 600 }}>
+                        Profil détecté : {libelleMarche(res.identification)} · {libelleFamilleDos(res.identification)}
                       </div>
                       <div style={{
                         marginTop: 7, fontSize: 14, fontWeight: 500,
@@ -1790,9 +1915,9 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                       </div>
                       {incoherenceDos(res.identification) === true && (
                         <div className="ap-alerte" style={{ marginTop: 9 }}>
-                          Le dos indique une édition {res.identification.edition_dos} alors que le recto
-                          semble en {res.identification.langue}. Ce décalage est rédhibitoire — vérifiez
-                          qu'il ne s'agit pas de deux cartes différentes prises en photo, sinon écartez l'annonce.
+                          Incohérence régionale : {libelleMarche(res.identification)} ne correspond pas à
+                          {` ${libelleFamilleDos(res.identification)}`}. Vérifiez qu'il s'agit bien de la même carte ;
+                          une combinaison région / époque / dos impossible est rédhibitoire.
                         </div>
                       )}
                     </div>
@@ -1806,7 +1931,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                 return (
                   <div className="ap-carte">
                     <div className="ap-carte-corps">
-                      <h2 className="ap-titre-sec">Catalogue officiel · TCGdex</h2>
+                      <h2 className="ap-titre-sec">Catalogue externe · TCGdex</h2>
                       {!catalogue.trouve ? (
                         <div className="ap-meta">
                           Introuvable sous ce nom dans TCGdex — soit une carte très récente ou une

@@ -48,3 +48,12 @@ console Anthropic.
 - Le garde-fou compare le bleu aux encres jaune/rouge dans cette même zone et utilise aussi le ratio bleu/référence.
 - Le cas de régression Rayquaza (bleu ~42–43 % alors que les autres encres restent nettement plus saturées) déclenche désormais une anomalie rédhibitoire.
 - Le garde-fou peut reconnaître un dos par sa signature visuelle même si son rôle a été mal sélectionné dans l'interface.
+
+## v1.4 — profils régionaux Japon / Chine / Europe
+- Détection régionale avant le verdict : 🇯🇵 japonais, 🇨🇳 chinois, 🇪🇺 européen/international latin, ou autre/indéterminé.
+- Le recto détermine le marché ; un dos international ne peut jamais distinguer chinois et européen à lui seul.
+- Trois familles de dos : japonais Old Back (1996–juil. 2001), japonais moderne, international.
+- Le garde-fou colorimétrique V1.3 n'est plus universel : il ne s'applique qu'au profil de dos international. Un vrai Old Back japonais ne peut donc plus être condamné par les seuils du Rayquaza international.
+- Le prompt adapte désormais catalogue, holo, texture, colorimétrie, mise en page et cohérence à la carte précise et à son marché.
+- Ajout d'un sélecteur « Profil régional » laissé sur détection automatique par défaut, avec possibilité de forcer Japon / Chine / Europe en cas de besoin.
+- Les conseils physiques ont été rendus dépendants du tirage : aucune texture ou plage de poids n'est présentée comme universelle.
