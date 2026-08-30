@@ -369,6 +369,7 @@ function mesurerImage(img) {
   const mx0 = minX + (maxX - minX) * 0.08, mx1 = maxX - (maxX - minX) * 0.08;
   const my0 = minY + (maxY - minY) * 0.08, my1 = maxY - (maxY - minY) * 0.08;
   let bleus = 0, jaunes = 0, rougesC = 0, nC = 0, jaunesB = 0, nB = 0;
+  let sinC = 0, cosC = 0, nTeinteC = 0;
 
   for (let y = Math.max(0, minY); y <= Math.min(h - 1, maxY); y++)
     for (let x = Math.max(0, minX); x <= Math.min(w - 1, maxX); x++) {
@@ -398,7 +399,15 @@ function mesurerImage(img) {
       if (estJaune) jaunes++;
 
       const auCentre = x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1;
-      if (auCentre) { nC++; if (estRouge) rougesC++; }
+      if (auCentre) {
+        nC++; if (estRouge) rougesC++;
+        // Un aplat imprimé (la Poké Ball) garde une teinte quasi constante ;
+        // une illustration ou un fond holographique la fait varier sans arrêt.
+        if (sat > 0.15) {
+          const rad = (teinte * Math.PI) / 180;
+          sinC += Math.sin(rad); cosC += Math.cos(rad); nTeinteC++;
+        }
+      }
       const auBord = x < mx0 || x > mx1 || y < my0 || y > my1;
       if (auBord) { nB++; if (estJaune) jaunesB++; }
     }
@@ -410,6 +419,11 @@ function mesurerImage(img) {
   const partJaune = sN ? Math.round((jaunes / sN) * 1000) / 10 : 0;
   const rougeCentre = nC ? Math.round((rougesC / nC) * 1000) / 10 : 0;
   const jauneBord = nB ? Math.round((jaunesB / nB) * 1000) / 10 : 0;
+  // 0 = teinte parfaitement stable au centre (aplat imprimé) ; 1 = elle part
+  // dans tous les sens (illustration détaillée, paillettes d'holographie).
+  const teinteVarCentre = nTeinteC
+    ? Math.round((1 - Math.sqrt(sinC * sinC + cosC * cosC) / nTeinteC) * 100) / 100
+    : 1;
 
   /* ── géométrie ─────────────────────────────────────────────────
      Une photo prise de biais rend le centrage, l'épaisseur de bordure
@@ -429,7 +443,7 @@ function mesurerImage(img) {
   return {
     natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm, nettete, reflets, bouches, emprise, blocs,
     periodicite, pasTrame: lagPic, satMoy, satP90, partVive, biais, ratio,
-    partBleu, partJaune, rougeCentre, jauneBord,
+    partBleu, partJaune, rougeCentre, jauneBord, teinteVarCentre,
   };
 }
 
@@ -448,10 +462,14 @@ function deduireRole(m) {
   if (m.ratio > 1.05 && m.emprise >= 40 && m.emprise <= 72) return "lot";
   if (!formeCarte && m.emprise > 55) return "macro";
 
-  // Bleu dominant plus rouge au centre : c'est la Poké Ball.
-  if (m.partBleu > 26 && m.rougeCentre > 6) return "verso";
+  // Bleu dominant plus rouge au centre : c'est la Poké Ball — mais seulement
+  // si ce centre est un aplat imprimé. Un Pokémon rouge/orange sur fond
+  // holographique donne le même bleu+rouge sans être un dos : sa teinte,
+  // elle, saute partout (illustration, paillettes), donc on l'exclut ici.
+  const centreAplat = m.teinteVarCentre < 0.4;
+  if (m.partBleu > 26 && m.rougeCentre > 6 && centreAplat) return "verso";
   // Bleu massif suffit, même si le centre est masqué par un doigt ou un reflet.
-  if (m.partBleu > 42) return "verso";
+  if (m.partBleu > 42 && centreAplat) return "verso";
   // Bordure jaune franche sur le pourtour : face avant moderne ou Wizards.
   if (m.jauneBord > 16) return "recto";
 
@@ -719,7 +737,10 @@ CONNAISSANCES DE RÉFÉRENCE (état 2026)
 Dimensions communes : 63 × 88 mm, poids 1,70 à 1,80 g. Les contrefaçons tombent le plus souvent entre 1,2 et 1,5 g, ou au contraire entre 2,0 et 2,5 g, parce que le carton n'est pas le bon. Les sources divergent sur l'épaisseur exacte : ne t'appuie pas dessus.
 
 MARQUEUR D'ÉDITION AU DOS
-Le texte inscrit en arc au-dessus de la Poké Ball, sur le dos, distingue l'édition bien plus fiablement qu'aucune texture : les tirages japonais de 1996-1998 portent la mention « POCKET MONSTERS », tandis que la quasi-totalité des tirages internationaux (anglais, français, et les langues suivantes) portent le logo stylisé « Pokémon ». Ce marqueur est identique sur toutes les cartes d'une même édition, donc facile à lire même sur une photo moyenne, et il permet un contrôle de cohérence immédiat : si le dos porte la mention japonaise mais que le texte du recto est rédigé dans une autre langue (ou l'inverse), c'est une incohérence de catalogue, pas un simple doute — classe-la comme telle. Reste prudent sur les rééditions ou promos récentes qui peuvent s'écarter de cette règle générale ; en cas de doute, dis-le plutôt que de trancher.
+Le Japon a son PROPRE dos, différent de tout le reste du monde, et ce depuis 1996 — pas seulement sur les tirages anciens. Dos japonais : bleu plus sombre et plus saturé, contour de la Poké Ball plus épais, bouton/charnière positionné correctement depuis 2001, bande grise en bordure de carte, et la balle est représentée immobile (elle ne semble pas tournoyer). Le texte en arc au-dessus de la balle dit « POCKET MONSTERS » sur les tirages de 1996 à 2001, puis « Pokémon » ensuite — mais le dessin reste japonais dans les deux cas, ce changement de texte ne signifie pas un alignement sur l'international.
+TOUT le reste du monde (français, anglais, allemand, espagnol, italien, chinois simplifié, chinois traditionnel, coréen, etc.) partage un seul et même dos international, inchangé depuis 1999 : bleu plus clair, contour de balle plus fin, effet de tournoiement autour de la balle, bordure jaune/beige.
+Conséquence pour le contrôle de cohérence : le dos dit seulement « japonais » ou « pas japonais ». S'il est japonais, le recto DOIT être en japonais (kana/kanji) ; s'il est international, le recto ne doit PAS être en japonais, mais peut être dans n'importe quelle autre langue. Un décalage dans l'un ou l'autre sens est une incohérence de catalogue à part entière, pas un simple doute.
+En revanche le dos ne permet jamais de distinguer chinois, coréen ou une langue européenne entre eux — pour ça, c'est l'écriture du recto qu'il faut lire, et c'est un repère très fiable, visible au premier coup d'œil : kana/kanji = japonais, sinogrammes (simplifiés ou traditionnels) = chinois, hangul = coréen, alphabet latin = langue européenne (français, anglais, allemand, espagnol, italien…).
 
 BASE SET JAPONAIS 1996-1998
 Copyright : mentions Nintendo, GAMEFREAK, Creatures avec millésimes 1996-1997 selon le tirage. Bordures blanches plus étroites que sur les rééditions occidentales. Carton légèrement plus fin que le moderne. Holo starburst d'époque, pas de texture en relief.
@@ -779,13 +800,15 @@ const TESTS_PHYSIQUES = [
 ];
 
 /* ── cohérence dos / langue ────────────────────────────────────
-   Double vérification indépendante du jugement du modèle : le mot
-   inscrit au dos ("POCKET MONSTERS" = édition japonaise, logo
-   "Pokémon" = édition internationale) et la langue lue au recto
-   doivent raconter la même histoire. On ne fait confiance ni
-   exclusivement au modèle ni exclusivement à ce mot-clé : les deux
-   se recoupent, ce qui rattrape une éventuelle erreur de l'un ou
-   de l'autre.                                                    */
+   Double vérification indépendante du jugement du modèle : le Japon
+   a son propre dos depuis 1996 (bleu plus sombre, balle immobile,
+   bordure grise), quel que soit le texte qui y est écrit ; tout le
+   reste du monde partage un seul dos international. Le dos ne dit
+   donc que "japonais" ou "pas japonais" — jamais lequel des autres
+   pays — et doit rester cohérent avec l'écriture lue au recto dans
+   les deux sens. On ne fait confiance ni exclusivement au modèle ni
+   exclusivement à ce recoupement : les deux se corrigent l'un
+   l'autre.                                                        */
 function incoherenceDos(identification) {
   const dos = identification?.edition_dos;
   if (!dos || dos === "non_visible") return null;
@@ -942,7 +965,7 @@ export default function Scanner() {
     });
     let m;
     try { m = mesurerImage(img); }
-    catch { m = { natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm: 0, nettete: 0, reflets: 0, bouches: 0, emprise: 0, blocs: 1, periodicite: 0, pasTrame: 0, satMoy: 0, partBleu: 0, ratio: 0 }; }
+    catch { m = { natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm: 0, nettete: 0, reflets: 0, bouches: 0, emprise: 0, blocs: 1, periodicite: 0, pasTrame: 0, satMoy: 0, partBleu: 0, ratio: 0, teinteVarCentre: 1 }; }
     let role;
     try { role = roleForce || deduireRole(m); } catch { role = roleForce || "recto"; }
     return { id: crypto.randomUUID(), nom, url, img, m, role, sujet: true };
@@ -1066,8 +1089,8 @@ ${SAVOIR}
 Annonce : titre="${annonce.titre || "non fourni"}" | prix="${annonce.prix || "non fourni"}" | description="${(annonce.texte || "non fournie").slice(0, 700)}"
 
 Méthode :
-1. IDENTIFIER : nom, extension, numéro, rareté, langue, époque.
-2. COHÉRENCE CATALOGUE : cette combinaison existe-t-elle réellement ? numéro vs total de l'extension, rareté vs numéro, illustrateur, ligne de copyright vs époque, holo vs époque, carte imprimée dans cette langue. Si une photo du dos est disponible, lis le texte en arc au-dessus de la Poké Ball ("POCKET MONSTERS" = édition japonaise, logo "Pokémon" = édition internationale) et confronte-le à la langue du texte du recto : un dos japonais avec un recto en français (ou l'inverse) est une incohérence de catalogue à part entière. Un élément inventé est rédhibitoire. (catégorie "reproductible" : conforme ne prouve rien, incohérent condamne)
+1. IDENTIFIER : nom, extension, numéro, rareté, époque. Pour la langue, identifie la famille d'écriture du recto — c'est un repère visuel immédiat, sans ambiguïté : kana/kanji = japonais, sinogrammes = chinois (simplifié ou traditionnel), hangul = coréen, alphabet latin = langue européenne (français, anglais, allemand, espagnol, italien…).
+2. COHÉRENCE CATALOGUE : cette combinaison existe-t-elle réellement ? numéro vs total de l'extension, rareté vs numéro, illustrateur, ligne de copyright vs époque, holo vs époque, carte imprimée dans cette langue. Si une photo du dos est disponible, regarde s'il porte le dos exclusif japonais (bleu plus sombre et saturé, contour de balle épais, balle immobile, bordure grise) ou le dos international partagé par tout le reste du monde (bleu plus clair, contour fin, effet de tournoiement, bordure jaune) — le texte en arc aide aussi ("POCKET MONSTERS" ou "Pokémon" = japonais dans les deux cas, à condition que le reste du dessin soit bien japonais). Un dos japonais avec un recto écrit dans une autre écriture (ou l'inverse : dos international avec un recto en japonais) est une incohérence de catalogue à part entière — le dos ne distingue en revanche jamais le chinois, le coréen ou une langue européenne entre eux, seule l'écriture du recto le fait. Un élément inventé est rédhibitoire. (catégorie "reproductible" : conforme ne prouve rien, incohérent condamne)
 3. IMPRESSION : trame, bavures, halo autour des glyphes, niveau de noir — uniquement si la densité le permet. ("difficile")
 4. COLORIMÉTRIE : saturation et gamut cohérents avec l'époque de la carte. ("difficile")
 5. SURFACE : holographie, texture, vernis, grain du carton. ("difficile")
@@ -1080,7 +1103,7 @@ Règles strictes :
 - N'invente jamais un indice que tu ne peux pas voir. "non_verifiable" est un verdict honorable et attendu.
 - Si aucun critère "difficile" n'est vérifiable, dis-le explicitement dans le résumé : les photos ne peuvent pas établir l'authenticité, seulement la contredire.
 - Se tromper dans les deux sens coûte cher.
-- "edition_dos" : renseigne-le uniquement si une photo du dos est présente et lisible ("japonaise" pour "POCKET MONSTERS", "internationale" pour le logo "Pokémon"). Mets "non_visible" si aucun dos n'est fourni ou si le texte est illisible — n'invente jamais cette valeur.
+- "edition_dos" : renseigne-le uniquement si une photo du dos est présente et lisible. Mets "japonaise" pour le dos exclusif japonais (bleu sombre et saturé, contour de balle épais, balle immobile, bordure grise — quel que soit le texte, "POCKET MONSTERS" ou "Pokémon"), "internationale" pour le dos unique partagé par tout le reste du monde (français, anglais, chinois, coréen…), et "non_visible" si aucun dos n'est fourni ou si le dessin est illisible — n'invente jamais cette valeur. Ce champ dit seulement "japonais" ou "pas japonais", jamais laquelle des autres langues.
 
 Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maximum. Chaînes limitées à 110 caractères, sauf "resume" et "observation" jusqu'à 280. Le "resume" tient en deux ou trois phrases :
 {"identification":{"carte":"","extension":"","numero":"","langue":"","edition_dos":"japonaise|internationale|non_visible","coherence":"coherent|incoherent|indetermine","note":""},
