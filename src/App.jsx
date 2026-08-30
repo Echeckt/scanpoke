@@ -602,7 +602,7 @@ const POIDS = {
   contextuel:    { credit: 0.8, charge: 1.6 },
 };
 
-function scorer(controles, identification) {
+function scorer(controles, identification, confiance = 100) {
   const l = Array.isArray(controles) ? controles : [];
   let credit = 0, charge = 0, probantsVus = 0, reproductiblesVus = 0;
 
@@ -616,11 +616,21 @@ function scorer(controles, identification) {
     else if (c.verdict === "conforme") credit += p.credit;
   }
 
-  let score = 50 + credit * 4.2 - charge * 5.4;
+  let score = 50 + credit * 2.6 - charge * 5.4;
 
   // Rien de probant observé : on ne peut pas dépasser le doute raisonnable,
   // quelle que soit la beauté de la photo.
   if (probantsVus === 0) score = Math.min(score, 58);
+
+  /* Un score au-dessus de la neutralité doit être adossé à de la
+     confiance : on le ramène vers 50 à proportion. Sans ça, trois
+     critères conformes affichaient 94 à côté d'un verdict
+     « indéterminé » — et c'est le gros chiffre qu'on lit en premier.
+     En dessous de 50, aucun rabais : un défaut constaté reste un
+     défaut, même sur une photo médiocre. L'absence de preuve n'est
+     pas une preuve, mais la présence d'un défaut en est une.      */
+  if (score > 50) score = 50 + (score - 50) * (Math.max(0, Math.min(100, confiance)) / 100);
+
   // Une incohérence catalogue reste rédhibitoire.
   if (identification?.coherence === "incoherent") score = Math.min(score, 8);
 
@@ -1064,7 +1074,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
 
       // Le score n'est plus celui du modèle : il découle des catégories,
       // donc un critère reproductible conforme ne peut plus le gonfler.
-      const note = scorer(j.controles, j.identification);
+      const note = scorer(j.controles, j.identification, conf);
 
       let verdict;
       if (note.score <= 22) verdict = "probablement_faux";
