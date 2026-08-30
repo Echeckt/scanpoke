@@ -155,9 +155,15 @@ const CSS = `
 .ap-etape{ display:flex; gap:11px; align-items:center; font-size:15px; color:var(--label2);
   animation:apparait .4s var(--ressort) both; }
 .ap-etape.faite{ color:var(--label); }
+.ap-etape.active{ color:var(--label); }
 .ap-pastille-e{ width:20px; height:20px; border-radius:50%; flex:none; display:grid; place-items:center;
   background:var(--fill); color:var(--label3); font-size:11px; }
 .ap-etape.faite .ap-pastille-e{ background:var(--green); color:#fff; }
+.ap-pastille-e.tourne{ background:transparent; border:2px solid var(--sep-fort);
+  border-top-color:var(--blue); animation:tourne .8s linear infinite; }
+@keyframes tourne{ to{ transform:rotate(360deg); } }
+.ap-etape.active .ap-etape-txt{ animation:respire 1.6s ease-in-out infinite; }
+@keyframes respire{ 0%,100%{ opacity:1; } 50%{ opacity:.5; } }
 
 /* ─ verdict ─ */
 .ap-verdict{ display:flex; gap:20px; align-items:center; flex-wrap:wrap; padding:20px 18px; }
@@ -809,6 +815,31 @@ const TESTS_PHYSIQUES = [
    les deux sens. On ne fait confiance ni exclusivement au modèle ni
    exclusivement à ce recoupement : les deux se corrigent l'un
    l'autre.                                                        */
+/* ── correspondance langue → code TCGdex ─────────────────────────
+   Best-effort : sert uniquement à surligner, dans la liste renvoyée
+   par le catalogue, la langue que Claude a lue sur le recto. Si le
+   texte ne correspond à rien de connu, on ne surligne rien plutôt
+   que de deviner.                                                 */
+function codeLangueTCGdex(texte) {
+  const t = String(texte || "").toLowerCase();
+  if (/simplifi/.test(t)) return null; // TCGdex ne référence que le chinois traditionnel
+  if (/chinois/.test(t)) return "zh-tw";
+  if (/japon/.test(t)) return "ja";
+  if (/fran[cç]ais/.test(t)) return "fr";
+  if (/anglais/.test(t)) return "en";
+  if (/allemand/.test(t)) return "de";
+  if (/espagnol/.test(t)) return "es";
+  if (/italien/.test(t)) return "it";
+  if (/portugais/.test(t)) return "pt";
+  if (/indon[ée]sien/.test(t)) return "id";
+  if (/tha[iï]/.test(t)) return "th";
+  return null;
+}
+const LIBELLE_LANGUE = {
+  en: "Anglais", fr: "Français", de: "Allemand", es: "Espagnol", it: "Italien",
+  pt: "Portugais", ja: "Japonais", "zh-tw": "Chinois (traditionnel)", id: "Indonésien", th: "Thaï",
+};
+
 function incoherenceDos(identification) {
   const dos = identification?.edition_dos;
   if (!dos || dos === "non_visible") return null;
@@ -906,6 +937,7 @@ export default function Scanner() {
   const [occupe, setOccupe] = useState(false);
   const [collecte, setCollecte] = useState(false);
   const [res, setResultat] = useState(null);
+  const [catalogue, setCatalogue] = useState(null);
   const [err, setErr] = useState("");
   const [survol, setSurvol] = useState(false);
   const [copie, setCopie] = useState(false);
@@ -1023,7 +1055,7 @@ export default function Scanner() {
 
   const lancer = async () => {
     if (!photos.length) return;
-    setOccupe(true); setErr(""); setResultat(null);
+    setOccupe(true); setErr(""); setResultat(null); setCatalogue(null);
     const log = (t, k = "att") => setJournal((j) => [...j, { t, k }]);
 
     try {
@@ -1190,6 +1222,21 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
         },
         tokens, rapport,
       }, ...historique.filter((e) => normaliserUrl(e.url) !== normaliserUrl(annonce.url))].slice(0, MAX_HIST));
+
+      if (j.identification?.carte) {
+        log("Vérification du catalogue TCGdex");
+        try {
+          const q = new URLSearchParams({ nom: j.identification.carte });
+          if (j.identification.numero) q.set("numero", j.identification.numero);
+          const rc = await fetch(`/api/catalogue?${q.toString()}`);
+          const dc = await rc.json();
+          setCatalogue(dc);
+          log(dc.trouve ? `Trouvée dans ${dc.langues.length} langue(s) au catalogue` : "Introuvable dans le catalogue TCGdex",
+              dc.trouve ? "ok" : "att");
+        } catch {
+          setCatalogue(null);
+        }
+      }
     } catch (e) {
       setErr(e.message || "Échec de l'analyse.");
     } finally { setOccupe(false); }
@@ -1202,6 +1249,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
 
   const rouvrir = (e) => {
     setResultat(e.rapport);
+    setCatalogue(null);
     setErr(""); setJournal([]);
     setAnnonce((a) => ({ ...a, url: e.url, titre: e.titre, prix: e.prix || a.prix }));
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1347,12 +1395,17 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
               <div className="ap-carte-corps">
                 <h2 className="ap-titre-sec">{occupe || collecte ? "En cours" : "Terminé"}</h2>
                 <div className="ap-etapes">
-                  {journal.map((l, i) => (
-                    <div key={i} className={`ap-etape ${l.k === "ok" ? "faite" : ""}`}>
-                      <span className="ap-pastille-e">{l.k === "ok" ? "✓" : "·"}</span>
-                      <span>{l.t}</span>
-                    </div>
-                  ))}
+                  {journal.map((l, i) => {
+                    const active = l.k !== "ok" && i === journal.length - 1 && (occupe || collecte);
+                    return (
+                      <div key={i} className={`ap-etape ${l.k === "ok" ? "faite" : ""} ${active ? "active" : ""}`}>
+                        <span className={`ap-pastille-e ${active ? "tourne" : ""}`}>
+                          {l.k === "ok" ? "✓" : active ? "" : "·"}
+                        </span>
+                        <span className="ap-etape-txt">{l.t}{active ? "…" : ""}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -1429,6 +1482,59 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                   </div>
                 )}
               </div>
+
+              {catalogue && (() => {
+                const attendu = codeLangueTCGdex(res.identification?.langue);
+                const manquant = catalogue.trouve && attendu && !catalogue.langues.includes(attendu);
+                return (
+                  <div className="ap-carte">
+                    <div className="ap-carte-corps">
+                      <h2 className="ap-titre-sec">Catalogue officiel · TCGdex</h2>
+                      {!catalogue.trouve ? (
+                        <div className="ap-meta">
+                          Introuvable sous ce nom dans TCGdex — soit une carte très récente ou une
+                          promo pas encore référencée, soit un nom mal identifié. Une carte absente
+                          du catalogue n'est pas pour autant une contrefaçon : vérifiez juste le nom.
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+                          {catalogue.image && (
+                            <img src={catalogue.image} alt="" style={{
+                              width: 60, height: 84, objectFit: "cover", borderRadius: 8,
+                              flex: "none", background: "var(--fill)",
+                            }} />
+                          )}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 15, fontWeight: 600 }}>{catalogue.nom}</div>
+                            <div className="ap-meta" style={{ marginTop: 3 }}>
+                              {catalogue.extension || "extension inconnue"} · n° {catalogue.numero || "—"}
+                              {catalogue.rarete ? ` · ${catalogue.rarete}` : ""}
+                            </div>
+                            <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {catalogue.langues.map((code) => (
+                                <span key={code} className="ap-cat"
+                                      style={code === attendu ? {
+                                        background: "color-mix(in srgb, var(--green) 20%, transparent)",
+                                        color: "var(--green)",
+                                      } : undefined}>
+                                  {LIBELLE_LANGUE[code] || code}
+                                </span>
+                              ))}
+                            </div>
+                            {manquant && (
+                              <div className="ap-alerte" style={{ marginTop: 10 }}>
+                                TCGdex ne recense cette carte qu'en {catalogue.langues.map((c) => LIBELLE_LANGUE[c] || c).join(", ")} —
+                                pas en {res.identification.langue}. Si le catalogue a raison, la carte
+                                photographiée n'existe tout simplement pas dans cette langue.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {Array.isArray(res.controles) && res.controles.length > 0 && (
                 <div className="ap-carte">
