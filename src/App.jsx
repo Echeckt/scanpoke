@@ -187,6 +187,26 @@ const CSS = `
 .ap-pied{ max-width:1080px; margin:34px auto 0; padding:0 24px; font-size:13px;
   line-height:1.5; color:var(--label3); text-align:center; }
 
+/* ─ avertissement doublon ─ */
+.ap-avert{ max-width:600px; margin:14px auto 0; display:flex; gap:12px; align-items:center;
+  background:color-mix(in srgb,var(--orange) 13%,transparent); border-radius:var(--r-m);
+  padding:13px 16px; text-align:left; animation:apparait .4s var(--ressort) both; }
+.ap-avert-t{ font-size:15px; line-height:1.4; flex:1; }
+
+/* ─ historique ─ */
+.ap-hist{ max-width:1080px; margin:22px auto 0; padding:0 24px; }
+.ap-hist-tete{ display:flex; align-items:baseline; justify-content:space-between; gap:14px; margin-bottom:12px; }
+.ap-hist-rang{ display:flex; gap:13px; padding:11px 13px; align-items:center; cursor:pointer;
+  border:none; background:none; width:100%; text-align:left; font-family:inherit; color:inherit;
+  transition:background .16s; }
+.ap-hist-rang + .ap-hist-rang{ box-shadow:inset 0 .5px 0 var(--sep); }
+.ap-hist-rang:hover{ background:var(--fill); }
+.ap-hist-rang img{ width:38px; height:53px; object-fit:cover; border-radius:6px; flex:none; background:var(--fill); }
+.ap-hist-info{ flex:1; min-width:0; }
+.ap-hist-t{ font-size:15px; font-weight:500; letter-spacing:-.01em; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.ap-pastille-v{ font-size:12px; font-weight:600; padding:3px 9px; border-radius:980px; flex:none; }
+
 @media (prefers-reduced-motion:reduce){ .ap *{ animation:none!important; transition:none!important; } }
 `;
 
@@ -366,6 +386,54 @@ function extraireJSON(txt) {
   try { return JSON.parse(rep); } catch { return null; }
 }
 
+/* ── historique local ──────────────────────────────────────────
+   Stocké dans le navigateur, donc propre à cet appareil : rien ne
+   part sur un serveur, mais rien ne suit non plus d'un appareil à
+   l'autre. Son rôle est d'éviter de repayer deux fois la même
+   annonce.                                                       */
+const CLE_HIST = "scanpoke.historique.v1";
+const MAX_HIST = 60;
+
+function lireHistorique() {
+  try {
+    const b = localStorage.getItem(CLE_HIST);
+    const l = b ? JSON.parse(b) : [];
+    return Array.isArray(l) ? l : [];
+  } catch { return []; }
+}
+
+function ecrireHistorique(liste) {
+  const essai = (l) => {
+    try { localStorage.setItem(CLE_HIST, JSON.stringify(l)); return true; }
+    catch { return false; }
+  };
+  if (essai(liste)) return liste;
+  // quota atteint : on élague les plus anciennes et on réessaie
+  const court = liste.slice(0, Math.max(5, Math.floor(liste.length / 2)));
+  return essai(court) ? court : liste;
+}
+
+function normaliserUrl(u) {
+  try { const x = new URL(String(u).trim()); return (x.origin + x.pathname).replace(/\/$/, ""); }
+  catch { return String(u || "").trim(); }
+}
+
+function miniature(img, max = 128, q = 0.62) {
+  try {
+    const e = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(img.naturalWidth * e));
+    c.height = Math.max(1, Math.round(img.naturalHeight * e));
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", q);
+  } catch { return ""; }
+}
+
+const dateCourte = (t) =>
+  new Date(t).toLocaleDateString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+const milliers = (n) => (n || 0).toLocaleString("fr-FR");
+
 const TEINTE = {
   probablement_authentique: "var(--green)",
   indetermine: "var(--orange)",
@@ -438,6 +506,21 @@ export default function Scanner() {
   const [survol, setSurvol] = useState(false);
   const [copie, setCopie] = useState(false);
   const fichierRef = useRef(null);
+  const [historique, setHistorique] = useState([]);
+
+  useEffect(() => { setHistorique(lireHistorique()); }, []);
+
+  const majHistorique = (l) => setHistorique(ecrireHistorique(l));
+
+  const dejaVue = useMemo(() => {
+    const n = normaliserUrl(annonce.url);
+    return n && n.includes("/items/") ? historique.find((e) => normaliserUrl(e.url) === n) : null;
+  }, [annonce.url, historique]);
+
+  const totalTokens = useMemo(
+    () => historique.reduce((a, e) => a + (e.tokens?.entree || 0) + (e.tokens?.sortie || 0), 0),
+    [historique]
+  );
 
   const preuve = useMemo(() => plafondPreuve(photos), [photos]);
 
@@ -586,20 +669,49 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
       if (conf < 45 && verdict === "probablement_authentique") verdict = "indetermine";
       if (j.identification?.coherence === "incoherent") verdict = "probablement_faux";
 
-      setResultat({ ...j, confiance: conf, confBrute, verdict, score: Math.max(0, Math.min(100, Number(j.score) || 0)) });
+      const message = `Bonjour,\n\nJe suis intéressé(e) par votre annonce. Avant d'acheter, pourriez-vous m'envoyer :\n${
+        [...(j.questions || []), ...preuve.manques].filter(Boolean).slice(0, 6).map((q) => `• ${q}`).join("\n")
+      }\n\nDes photos nettes, à plat, hors pochette et sans reflet direct suffisent. Merci beaucoup !`;
+
+      const tokens = {
+        entree: data.usage?.input_tokens || 0,
+        sortie: data.usage?.output_tokens || 0,
+      };
+
+      const rapport = {
+        ...j, confiance: conf, confBrute, verdict, message, tokens,
+        score: Math.max(0, Math.min(100, Number(j.score) || 0)),
+      };
+      setResultat(rapport);
+
+      majHistorique([{
+        id: crypto.randomUUID(),
+        date: Date.now(),
+        url: annonce.url.trim(),
+        titre: annonce.titre || j.identification?.carte || "Analyse sans titre",
+        prix: annonce.prix,
+        vignette: miniature(retenues[0].img),
+        verdict, score: rapport.score, confiance: conf,
+        tokens, rapport,
+      }, ...historique.filter((e) => normaliserUrl(e.url) !== normaliserUrl(annonce.url))].slice(0, MAX_HIST));
     } catch (e) {
       setErr(e.message || "Échec de l'analyse.");
     } finally { setOccupe(false); }
   };
 
-  const messageVendeur = res
-    ? `Bonjour,\n\nJe suis intéressé(e) par votre annonce. Avant d'acheter, pourriez-vous m'envoyer :\n${
-        [...(res.questions || []), ...preuve.manques].filter(Boolean).slice(0, 6).map((q) => `• ${q}`).join("\n")
-      }\n\nDes photos nettes, à plat, hors pochette et sans reflet direct suffisent. Merci beaucoup !`
-    : "";
+  const messageVendeur = res?.message || "";
 
   const copier = () =>
     navigator.clipboard?.writeText(messageVendeur).then(() => { setCopie(true); setTimeout(() => setCopie(false), 1800); });
+
+  const rouvrir = (e) => {
+    setResultat(e.rapport);
+    setErr(""); setJournal([]);
+    setAnnonce((a) => ({ ...a, url: e.url, titre: e.titre, prix: e.prix || a.prix }));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const oublier = (id) => majHistorique(historique.filter((e) => e.id !== id));
 
   const teinteJauge = preuve.note > 70 ? "var(--green)" : preuve.note > 45 ? "var(--orange)" : "var(--red)";
 
@@ -623,6 +735,16 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
             {collecte ? "Lecture…" : "Lire l'annonce"}
           </button>
         </div>
+
+        {dejaVue && (
+          <div className="ap-avert">
+            <Alerte c="var(--orange)" />
+            <span className="ap-avert-t">
+              Déjà analysée le {dateCourte(dejaVue.date)}. Relancer consommera de nouveaux crédits.
+            </span>
+            <button className="ap-btn discret" onClick={() => rouvrir(dejaVue)}>Voir le rapport</button>
+          </div>
+        )}
       </header>
 
       <div className="ap-grille">
@@ -693,7 +815,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
 
             <button className="ap-btn pleine" style={{ marginTop: 18 }}
                     disabled={!photos.length || occupe || collecte} onClick={lancer}>
-              {occupe ? "Analyse en cours…" : "Lancer le contrôle"}
+              {occupe ? "Analyse en cours…" : dejaVue ? "Relancer (nouvelle dépense)" : "Lancer le contrôle"}
             </button>
 
             {photos.length > 0 && (
@@ -850,6 +972,52 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maxim
           )}
         </section>
       </div>
+
+      {historique.length > 0 && (
+        <section className="ap-hist">
+          <div className="ap-hist-tete">
+            <div>
+              <h2 className="ap-titre-sec" style={{ margin: 0 }}>
+                Historique · {historique.length} {historique.length > 1 ? "analyses" : "analyse"}
+              </h2>
+              <div className="ap-meta">{milliers(totalTokens)} tokens consommés au total</div>
+            </div>
+            <button className="ap-btn discret"
+                    onClick={() => { if (confirm("Effacer tout l'historique ?")) majHistorique([]); }}>
+              Tout effacer
+            </button>
+          </div>
+
+          <div className="ap-carte">
+            <div className="ap-groupe" style={{ borderRadius: 0, background: "transparent" }}>
+              {historique.map((e) => (
+                <div key={e.id} style={{ display: "flex", alignItems: "center" }}>
+                  <button className="ap-hist-rang" onClick={() => rouvrir(e)}>
+                    {e.vignette
+                      ? <img src={e.vignette} alt="" />
+                      : <span style={{ width: 38, height: 53, borderRadius: 6, background: "var(--fill)", flex: "none" }} />}
+                    <span className="ap-hist-info">
+                      <span className="ap-hist-t" style={{ display: "block" }}>{e.titre}</span>
+                      <span className="ap-meta" style={{ display: "block" }}>
+                        {dateCourte(e.date)}
+                        {e.prix ? ` · ${e.prix}` : ""}
+                        {` · ${milliers((e.tokens?.entree || 0) + (e.tokens?.sortie || 0))} tokens`}
+                      </span>
+                    </span>
+                    <span className="ap-pastille-v" style={{
+                      background: `color-mix(in srgb, ${TEINTE[e.verdict]} 16%, transparent)`,
+                      color: TEINTE[e.verdict],
+                    }}>{e.score}</span>
+                  </button>
+                  <button className="ap-x" style={{ margin: "0 13px 0 4px" }}
+                          aria-label={`Retirer ${e.titre} de l'historique`}
+                          onClick={() => oublier(e.id)}>×</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       <p className="ap-pied">
         Le contrôle porte sur des photographies, pas sur la carte. Il oriente une décision d'achat ;
