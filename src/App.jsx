@@ -1,141 +1,193 @@
-import React, { useState, useRef, useCallback, useMemo } from "react";
+import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 
 /* ────────────────────────────────────────────────────────────────
    CONTRÔLE D'AUTHENTICITÉ — cartes Pokémon TCG
-   Direction visuelle : cabine de contrôle d'épreuve d'imprimeur.
-   Gris neutre normalisé, encres CMJN, repères de registration.
-   Le cadran de verdict est une mire : plus la confiance baisse,
-   plus les tons se décalent hors registre.
+   Langage visuel : Human Interface Guidelines.
+   SF Pro, gris de fond #F5F5F7, cartes flottantes à angles continus,
+   anneaux de progression, interrupteurs iOS, mode sombre système.
    ──────────────────────────────────────────────────────────────── */
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+.ap{
+  --bg:#F5F5F7; --surface:#FFFFFF; --surface2:#F5F5F7; --fill:rgba(120,120,128,.12);
+  --label:#1D1D1F; --label2:#6E6E73; --label3:#86868B;
+  --sep:rgba(0,0,0,.08); --sep-fort:rgba(0,0,0,.14);
+  --blue:#0071E3; --green:#34C759; --orange:#FF9500; --red:#FF3B30;
+  --r-l:20px; --r-m:14px; --r-s:10px;
+  --ombre:0 4px 20px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
+  --ressort:cubic-bezier(.16,1,.3,1);
 
-.pc-root{
-  --gris:#DEDFDC; --gris-fonce:#C6C8C4; --papier:#FAFAF7;
-  --encre:#15171B; --encre-douce:#5A5F66;
-  --cyan:#0089B0; --magenta:#C8005F; --jaune:#E0AC00;
-  --trait:rgba(21,23,27,.16); --trait-fort:rgba(21,23,27,.42);
-  font-family:Archivo,"Helvetica Neue",Arial,sans-serif;
-  background:var(--gris); color:var(--encre); min-height:100%;
-  padding:0 0 64px; -webkit-font-smoothing:antialiased;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
+  background:var(--bg); color:var(--label); min-height:100%;
+  padding:0 0 80px; letter-spacing:-.01em;
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
 }
-.pc-root *{ box-sizing:border-box; }
-.pc-mono{ font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace; }
-.pc-wrap{ max-width:1180px; margin:0 auto; padding:0 20px; }
+@media (prefers-color-scheme:dark){
+  .ap{
+    --bg:#000; --surface:#1C1C1E; --surface2:#2C2C2E; --fill:rgba(120,120,128,.24);
+    --label:#F5F5F7; --label2:#98989D; --label3:#6E6E73;
+    --sep:rgba(255,255,255,.10); --sep-fort:rgba(255,255,255,.18);
+    --blue:#0A84FF; --green:#30D158; --orange:#FF9F0A; --red:#FF453A;
+    --ombre:0 4px 24px rgba(0,0,0,.5);
+  }
+}
+.ap *{ box-sizing:border-box; }
+.ap-mono{ font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums; }
 
-.pc-bandeau{ border-bottom:1px solid var(--trait-fort); padding:22px 0 18px; margin-bottom:26px; }
-.pc-eyebrow{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:10.5px;
-  letter-spacing:.22em; text-transform:uppercase; color:var(--encre-douce);
-  display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.pc-titre{ font-size:clamp(30px,6.2vw,54px); font-weight:800; letter-spacing:-.032em;
-  line-height:.96; margin:12px 0 8px; max-width:15ch; }
-.pc-sous{ font-size:14.5px; line-height:1.5; color:var(--encre-douce); max-width:58ch; }
-.pc-encres{ display:flex; gap:3px; margin-top:16px; }
-.pc-encres span{ height:5px; flex:1; }
+/* ─ héros ─ */
+.ap-hero{ text-align:center; padding:76px 24px 44px; max-width:720px; margin:0 auto; }
+.ap-eyebrow{ font-size:19px; font-weight:600; color:var(--blue); letter-spacing:-.01em; margin-bottom:8px; }
+.ap-h1{ font-size:clamp(38px,7vw,58px); font-weight:700; letter-spacing:-.03em;
+  line-height:1.06; margin:0 0 18px; }
+.ap-lead{ font-size:clamp(17px,2.4vw,21px); line-height:1.45; color:var(--label2);
+  margin:0 auto; max-width:34em; font-weight:400; }
 
-.pc-grille{ display:grid; grid-template-columns:minmax(0,1fr); gap:24px; }
-@media (min-width:900px){ .pc-grille{ grid-template-columns:400px minmax(0,1fr); gap:34px; align-items:start; } }
+/* ─ barre de recherche ─ */
+.ap-recherche{ display:flex; gap:10px; max-width:600px; margin:34px auto 0; }
+.ap-recherche .ap-input{ flex:1; min-width:0; height:50px; font-size:17px;
+  border-radius:980px; padding:0 20px; text-align:left; }
 
-.pc-bloc{ background:var(--papier); border:1px solid var(--trait); }
-.pc-bloc-tete{ display:flex; align-items:baseline; justify-content:space-between; gap:12px;
-  padding:11px 14px; border-bottom:1px solid var(--trait); }
-.pc-bloc-titre{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:10.5px;
-  letter-spacing:.19em; text-transform:uppercase; font-weight:600; }
-.pc-bloc-num{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:10.5px; color:var(--encre-douce); }
-.pc-bloc-corps{ padding:14px; }
+/* ─ contrôles de base ─ */
+.ap-input,.ap-zone{
+  width:100%; background:var(--surface); color:var(--label);
+  border:1px solid var(--sep-fort); border-radius:var(--r-s);
+  font-family:inherit; font-size:16px; padding:11px 14px; letter-spacing:-.01em;
+  transition:border-color .18s, box-shadow .18s;
+}
+.ap-zone{ resize:vertical; min-height:78px; line-height:1.45; }
+.ap-input:focus,.ap-zone:focus,.ap-menu:focus{
+  outline:none; border-color:var(--blue); box-shadow:0 0 0 4px color-mix(in srgb,var(--blue) 18%,transparent);
+}
+.ap-input::placeholder,.ap-zone::placeholder{ color:var(--label3); }
 
-.pc-collecte{ display:flex; gap:7px; margin-bottom:4px; }
-.pc-collecte input{ flex:1; min-width:0; }
-.pc-collecte button{ flex:none; border:1px solid var(--encre); background:var(--encre);
-  color:var(--papier); cursor:pointer; font-family:"IBM Plex Mono",monospace;
-  font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; padding:0 13px; }
-.pc-collecte button:hover:not(:disabled){ background:var(--cyan); border-color:var(--cyan); }
-.pc-collecte button:disabled{ opacity:.38; cursor:not-allowed; }
+.ap-btn{
+  border:none; border-radius:980px; cursor:pointer; font-family:inherit;
+  font-size:17px; font-weight:500; letter-spacing:-.01em; padding:0 22px; height:50px;
+  background:var(--blue); color:#fff; white-space:nowrap;
+  transition:transform .18s var(--ressort), opacity .18s, filter .18s;
+}
+.ap-btn:hover:not(:disabled){ filter:brightness(1.08); }
+.ap-btn:active:not(:disabled){ transform:scale(.96); }
+.ap-btn:disabled{ opacity:.35; cursor:not-allowed; }
+.ap-btn.pleine{ width:100%; }
+.ap-btn.discret{ background:var(--fill); color:var(--blue); height:38px; font-size:15px; padding:0 16px; }
 
-.pc-depot{ border:1px dashed var(--trait-fort); background:transparent; padding:22px 16px;
-  text-align:center; cursor:pointer; width:100%; transition:background .14s,border-color .14s;
-  font-family:inherit; color:inherit; margin-top:12px; }
-.pc-depot:hover,.pc-depot.actif{ background:rgba(0,137,176,.07); border-color:var(--cyan); }
-.pc-depot-t{ font-size:14px; font-weight:600; }
-.pc-depot-s{ font-size:11.5px; color:var(--encre-douce); margin-top:5px; }
+/* ─ menu déroulant façon macOS ─ */
+.ap-menu{
+  appearance:none; -webkit-appearance:none;
+  background:var(--fill); color:var(--label); border:none; border-radius:8px;
+  font-family:inherit; font-size:14px; font-weight:500; letter-spacing:-.01em;
+  padding:6px 28px 6px 11px; cursor:pointer; width:100%;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 15px) 13px,calc(100% - 11px) 13px;
+  background-size:4px 4px,4px 4px; background-repeat:no-repeat;
+}
 
-.pc-vignettes{ display:flex; flex-direction:column; gap:9px; margin-top:12px; }
-.pc-vig{ display:flex; gap:10px; border:1px solid var(--trait); padding:8px; align-items:flex-start; }
-.pc-vig img{ width:56px; height:78px; object-fit:cover; background:var(--gris-fonce); flex:none; }
-.pc-vig-info{ flex:1; min-width:0; }
-.pc-select{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:11px;
-  border:1px solid var(--trait-fort); background:var(--papier); color:var(--encre);
-  padding:3px 5px; width:100%; margin-bottom:6px; }
-.pc-metriques{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:10.5px;
-  line-height:1.65; color:var(--encre-douce); }
-.pc-metriques b{ color:var(--encre); font-weight:500; }
-.pc-suppr{ border:none; background:none; cursor:pointer; padding:2px 5px; color:var(--encre-douce);
-  font-family:"IBM Plex Mono",monospace; font-size:14px; line-height:1; flex:none; }
-.pc-suppr:hover{ color:var(--magenta); }
+/* ─ interrupteur iOS ─ */
+.ap-switch{ position:relative; width:51px; height:31px; flex:none; }
+.ap-switch input{ position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; z-index:2; }
+.ap-piste{ position:absolute; inset:0; background:var(--fill); border-radius:980px;
+  transition:background .26s var(--ressort); pointer-events:none; }
+.ap-pastille{ position:absolute; top:2px; left:2px; width:27px; height:27px; background:#fff;
+  border-radius:50%; box-shadow:0 3px 8px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.16);
+  transition:transform .26s var(--ressort); pointer-events:none; }
+.ap-switch input:checked ~ .ap-piste{ background:var(--green); }
+.ap-switch input:checked ~ .ap-pastille{ transform:translateX(20px); }
 
-.pc-label{ display:block; font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:10px;
-  letter-spacing:.16em; text-transform:uppercase; color:var(--encre-douce); margin:14px 0 5px; }
-.pc-champ,.pc-zone{ width:100%; border:1px solid var(--trait-fort); background:var(--papier);
-  color:var(--encre); font-family:inherit; font-size:13.5px; padding:8px 9px; }
-.pc-zone{ resize:vertical; min-height:62px; line-height:1.45; }
-.pc-champ:focus,.pc-zone:focus,.pc-select:focus{ outline:2px solid var(--cyan); outline-offset:1px; }
+/* ─ grille ─ */
+.ap-grille{ max-width:1080px; margin:0 auto; padding:0 24px;
+  display:grid; grid-template-columns:minmax(0,1fr); gap:22px; }
+@media (min-width:940px){ .ap-grille{ grid-template-columns:396px minmax(0,1fr); gap:26px; align-items:start; } }
 
-.pc-bascule{ display:flex; gap:9px; align-items:flex-start; margin-top:16px; cursor:pointer; }
-.pc-bascule input{ margin-top:3px; accent-color:var(--cyan); flex:none; }
-.pc-bascule-t{ font-size:13px; font-weight:600; }
-.pc-bascule-s{ font-size:11.5px; color:var(--encre-douce); line-height:1.45; }
+/* ─ carte ─ */
+.ap-carte{ background:var(--surface); border-radius:var(--r-l); box-shadow:var(--ombre); overflow:hidden;
+  animation:apparait .55s var(--ressort) both; }
+@keyframes apparait{ from{ opacity:0; transform:translateY(10px); } to{ opacity:1; transform:none; } }
+.ap-carte-corps{ padding:22px; }
+.ap-titre-sec{ font-size:13px; font-weight:600; letter-spacing:.02em; text-transform:uppercase;
+  color:var(--label3); margin:0 0 12px; }
 
-.pc-action{ width:100%; margin-top:18px; padding:14px; border:none; cursor:pointer;
-  background:var(--encre); color:var(--papier); font-family:"IBM Plex Mono",ui-monospace,monospace;
-  font-size:12px; letter-spacing:.17em; text-transform:uppercase; font-weight:600; }
-.pc-action:hover:not(:disabled){ background:var(--cyan); }
-.pc-action:disabled{ opacity:.38; cursor:not-allowed; }
+/* ─ dépôt ─ */
+.ap-depot{ width:100%; border:1.5px dashed var(--sep-fort); border-radius:var(--r-m);
+  background:transparent; padding:26px 16px; cursor:pointer; font-family:inherit; color:inherit;
+  transition:background .18s, border-color .18s, transform .18s var(--ressort); }
+.ap-depot:hover,.ap-depot.actif{ border-color:var(--blue); background:color-mix(in srgb,var(--blue) 6%,transparent); }
+.ap-depot:active{ transform:scale(.99); }
+.ap-depot-t{ font-size:16px; font-weight:500; }
+.ap-depot-s{ font-size:13px; color:var(--label3); margin-top:4px; }
 
-.pc-journal{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:11.5px; line-height:1.85; }
-.pc-journal div{ display:flex; gap:9px; }
-.pc-journal .ok{ color:var(--cyan); }
-.pc-journal .att{ color:var(--encre-douce); }
+/* ─ liste groupée iOS ─ */
+.ap-groupe{ background:var(--surface2); border-radius:var(--r-m); overflow:hidden; }
+.ap-rang{ display:flex; gap:13px; padding:11px 13px; align-items:center; }
+.ap-rang + .ap-rang{ box-shadow:inset 0 .5px 0 var(--sep); }
+.ap-rang img{ width:46px; height:64px; object-fit:cover; border-radius:7px; flex:none; background:var(--fill); }
+.ap-rang-info{ flex:1; min-width:0; }
+.ap-meta{ font-size:12px; color:var(--label3); margin-top:5px; letter-spacing:0; }
+.ap-x{ width:26px; height:26px; border-radius:50%; border:none; background:var(--fill);
+  color:var(--label2); cursor:pointer; font-size:15px; line-height:1; flex:none;
+  transition:background .18s, transform .18s var(--ressort); }
+.ap-x:hover{ background:var(--red); color:#fff; }
+.ap-x:active{ transform:scale(.9); }
 
-.pc-mire{ display:flex; gap:22px; align-items:center; flex-wrap:wrap; padding:16px 14px;
-  border-bottom:1px solid var(--trait); }
-.pc-mire-txt{ flex:1; min-width:190px; }
-.pc-verdict{ font-size:clamp(21px,3.6vw,30px); font-weight:800; letter-spacing:-.026em; line-height:1.04; }
-.pc-verdict-s{ font-size:13px; line-height:1.5; color:var(--encre-douce); margin-top:7px; }
+/* ─ champ étiqueté ─ */
+.ap-champ{ margin-top:16px; }
+.ap-lbl{ display:block; font-size:13px; font-weight:500; color:var(--label2); margin-bottom:6px; }
 
-.pc-jauge{ margin-top:11px; }
-.pc-jauge-l{ display:flex; justify-content:space-between; font-family:"IBM Plex Mono",monospace;
-  font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:var(--encre-douce); margin-bottom:4px; }
-.pc-jauge-p{ height:4px; background:var(--gris-fonce); }
-.pc-jauge-p i{ display:block; height:100%; }
+/* ─ ligne réglage ─ */
+.ap-reglage{ display:flex; align-items:center; gap:14px; margin-top:20px;
+  padding:14px; background:var(--surface2); border-radius:var(--r-m); }
+.ap-reglage-t{ font-size:15px; font-weight:500; }
+.ap-reglage-s{ font-size:13px; color:var(--label3); line-height:1.4; margin-top:2px; }
 
-.pc-ctrl{ display:grid; grid-template-columns:4px 1fr; gap:11px; padding:11px 0; border-bottom:1px solid var(--trait); }
-.pc-ctrl:last-child{ border-bottom:none; }
-.pc-ctrl-zone{ font-family:"IBM Plex Mono",monospace; font-size:10px; letter-spacing:.15em;
-  text-transform:uppercase; color:var(--encre-douce); }
-.pc-ctrl-crit{ font-size:13.5px; font-weight:600; margin:2px 0 3px; }
-.pc-ctrl-obs{ font-size:13px; line-height:1.5; color:var(--encre-douce); }
+/* ─ jauge ─ */
+.ap-jauge{ margin-top:18px; }
+.ap-jauge-l{ display:flex; justify-content:space-between; font-size:13px; color:var(--label2); margin-bottom:7px; }
+.ap-piste-j{ height:6px; background:var(--fill); border-radius:980px; overflow:hidden; }
+.ap-piste-j i{ display:block; height:100%; border-radius:980px; transition:width .8s var(--ressort); }
 
-.pc-liste{ list-style:none; padding:0; margin:0; }
-.pc-liste li{ display:flex; gap:9px; font-size:13.5px; line-height:1.5; padding:6px 0; }
-.pc-puce{ font-family:"IBM Plex Mono",monospace; font-size:12px; flex:none; }
+/* ─ étapes ─ */
+.ap-etapes{ display:flex; flex-direction:column; gap:11px; }
+.ap-etape{ display:flex; gap:11px; align-items:center; font-size:15px; color:var(--label2);
+  animation:apparait .4s var(--ressort) both; }
+.ap-etape.faite{ color:var(--label); }
+.ap-pastille-e{ width:20px; height:20px; border-radius:50%; flex:none; display:grid; place-items:center;
+  background:var(--fill); color:var(--label3); font-size:11px; }
+.ap-etape.faite .ap-pastille-e{ background:var(--green); color:#fff; }
 
-.pc-msg{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:12px; line-height:1.65;
-  background:var(--gris); border:1px solid var(--trait); padding:11px; white-space:pre-wrap; }
-.pc-copier{ margin-top:9px; border:1px solid var(--encre); background:none; color:var(--encre);
-  cursor:pointer; font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.15em;
-  text-transform:uppercase; padding:7px 13px; }
-.pc-copier:hover{ background:var(--encre); color:var(--papier); }
+/* ─ verdict ─ */
+.ap-verdict{ display:flex; gap:26px; align-items:center; flex-wrap:wrap; padding:26px 22px; }
+.ap-verdict-txt{ flex:1; min-width:200px; }
+.ap-badge{ display:inline-block; font-size:13px; font-weight:600; padding:4px 11px;
+  border-radius:980px; margin-bottom:10px; }
+.ap-v-titre{ font-size:26px; font-weight:700; letter-spacing:-.025em; line-height:1.14; margin:0; }
+.ap-v-sous{ font-size:16px; line-height:1.47; color:var(--label2); margin:9px 0 0; }
 
-.pc-erreur{ border-left:3px solid var(--magenta); padding:11px 13px; font-size:13px;
-  line-height:1.5; background:rgba(200,0,95,.05); }
-.pc-vide{ padding:44px 18px; text-align:center; color:var(--encre-douce); }
-.pc-vide-t{ font-size:14px; font-weight:600; color:var(--encre); }
-.pc-vide-s{ font-size:12.5px; margin-top:6px; line-height:1.5; }
-.pc-pied{ margin-top:26px; font-family:"IBM Plex Mono",monospace; font-size:11px; line-height:1.7;
-  color:var(--encre-douce); border-top:1px solid var(--trait); padding-top:14px; }
+/* ─ constats ─ */
+.ap-constat{ display:flex; gap:12px; padding:14px 0; }
+.ap-constat + .ap-constat{ box-shadow:inset 0 .5px 0 var(--sep); }
+.ap-point{ width:9px; height:9px; border-radius:50%; flex:none; margin-top:6px; }
+.ap-c-zone{ font-size:12px; font-weight:600; color:var(--label3); text-transform:uppercase; letter-spacing:.03em; }
+.ap-c-titre{ font-size:16px; font-weight:600; margin:3px 0 3px; letter-spacing:-.015em; }
+.ap-c-obs{ font-size:15px; line-height:1.47; color:var(--label2); }
 
-@media (prefers-reduced-motion:reduce){ .pc-root *{ transition:none!important; animation:none!important; } }
+.ap-puces{ list-style:none; padding:0; margin:0; }
+.ap-puces li{ display:flex; gap:11px; font-size:15px; line-height:1.47; padding:7px 0; color:var(--label2); }
+.ap-puces svg{ flex:none; margin-top:2px; }
+
+.ap-msg{ background:var(--surface2); border-radius:var(--r-m); padding:15px;
+  font-size:15px; line-height:1.55; white-space:pre-wrap; color:var(--label2); }
+
+.ap-alerte{ background:color-mix(in srgb,var(--red) 10%,transparent); border-radius:var(--r-m);
+  padding:15px; font-size:15px; line-height:1.47; color:var(--label); }
+
+.ap-vide{ text-align:center; padding:60px 22px; }
+.ap-vide-t{ font-size:18px; font-weight:600; margin-top:14px; }
+.ap-vide-s{ font-size:15px; color:var(--label3); margin-top:6px; line-height:1.47; }
+
+.ap-pied{ max-width:1080px; margin:34px auto 0; padding:0 24px; font-size:13px;
+  line-height:1.5; color:var(--label3); text-align:center; }
+
+@media (prefers-reduced-motion:reduce){ .ap *{ animation:none!important; transition:none!important; } }
 `;
 
 /* Une carte fait 63 × 88 mm. La densité px/mm dit ce qui est lisible :
@@ -144,11 +196,11 @@ const CSS = `
 const LARGEUR_CARTE_MM = 63;
 
 const ROLES = [
-  { v: "recto", t: "Recto — carte entière" },
-  { v: "verso", t: "Verso — dos de la carte" },
-  { v: "tranche", t: "Tranche — couche noire" },
-  { v: "macro", t: "Gros plan — texte ou symbole" },
-  { v: "lot", t: "Lot / plusieurs cartes" },
+  { v: "recto", t: "Recto" },
+  { v: "verso", t: "Verso" },
+  { v: "tranche", t: "Tranche" },
+  { v: "macro", t: "Gros plan" },
+  { v: "lot", t: "Lot de cartes" },
   { v: "autre", t: "Autre" },
 ];
 const PRIORITE = { recto: 0, verso: 1, macro: 2, tranche: 3, lot: 4, autre: 5 };
@@ -245,7 +297,7 @@ function redimensionner(img, max = 1400, q = 0.85) {
 }
 
 function plafondPreuve(photos) {
-  if (!photos.length) return { plafond: 0, note: 0, manques: ["recto", "verso"], best: 0 };
+  if (!photos.length) return { plafond: 0, note: 0, manques: [], best: 0 };
   const best = Math.max(...photos.map((p) => p.m.pxParMm));
   const netMoy = photos.reduce((a, p) => a + p.m.nettete, 0) / photos.length;
   const reflMax = Math.max(...photos.map((p) => p.m.reflets));
@@ -314,39 +366,62 @@ function extraireJSON(txt) {
   try { return JSON.parse(rep); } catch { return null; }
 }
 
-const COULEURS = {
-  probablement_authentique: "var(--cyan)",
-  indetermine: "var(--jaune)",
-  suspect: "var(--jaune)",
-  probablement_faux: "var(--magenta)",
+const TEINTE = {
+  probablement_authentique: "var(--green)",
+  indetermine: "var(--orange)",
+  suspect: "var(--orange)",
+  probablement_faux: "var(--red)",
 };
-const LIBELLES = {
+const LIBELLE = {
   probablement_authentique: "Rien ne contredit l'authenticité",
   indetermine: "Indéterminé",
   suspect: "Signaux préoccupants",
   probablement_faux: "Très probablement une contrefaçon",
 };
+const BADGE = {
+  probablement_authentique: "Aucune anomalie",
+  indetermine: "Preuves insuffisantes",
+  suspect: "À vérifier",
+  probablement_faux: "Contrefaçon",
+};
 
-function Mire({ score, confiance, verdict }) {
-  const d = ((100 - confiance) / 100) * 9;
-  const c = COULEURS[verdict] || "var(--jaune)";
+/* ── icônes ── */
+const Coche = ({ c = "currentColor" }) => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <circle cx="8" cy="8" r="8" fill={c} />
+    <path d="M4.6 8.2l2.2 2.2 4.5-4.6" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+const Alerte = ({ c = "currentColor" }) => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <circle cx="8" cy="8" r="8" fill={c} />
+    <path d="M8 4.2v4.4M8 11.2v.6" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" />
+  </svg>
+);
+
+/* ── anneaux de progression ── */
+function Anneaux({ score, confiance, teinte }) {
+  const [anime, setAnime] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setAnime(true), 60); return () => clearTimeout(t); }, []);
+  const R1 = 74, R2 = 55, C1 = 2 * Math.PI * R1, C2 = 2 * Math.PI * R2;
   return (
-    <svg width="132" height="132" viewBox="0 0 132 132" role="img"
-         aria-label={`Score ${score} sur 100, confiance ${confiance}%`}>
-      <circle cx={66 - d} cy={66 + d * 0.6} r="46" fill="none" stroke="var(--cyan)" strokeWidth="1.1" opacity=".72" />
-      <circle cx={66 + d * 0.85} cy={66 + d * 0.5} r="46" fill="none" stroke="var(--magenta)" strokeWidth="1.1" opacity=".72" />
-      <circle cx={66} cy={66 - d} r="46" fill="none" stroke="var(--jaune)" strokeWidth="1.1" opacity=".78" />
-      <circle cx="66" cy="66" r="52" fill="none" stroke="var(--trait)" strokeWidth="1" />
-      <circle cx="66" cy="66" r="52" fill="none" stroke={c} strokeWidth="3"
-              strokeDasharray={`${(score / 100) * 326.7} 326.7`} transform="rotate(-90 66 66)" />
-      <line x1="66" y1="4" x2="66" y2="15" stroke="var(--encre)" strokeWidth="1" />
-      <line x1="66" y1="117" x2="66" y2="128" stroke="var(--encre)" strokeWidth="1" />
-      <line x1="4" y1="66" x2="15" y2="66" stroke="var(--encre)" strokeWidth="1" />
-      <line x1="117" y1="66" x2="128" y2="66" stroke="var(--encre)" strokeWidth="1" />
-      <text x="66" y="70" textAnchor="middle" fontFamily="Archivo,sans-serif" fontSize="34"
-            fontWeight="800" fill="var(--encre)" letterSpacing="-1.4">{score}</text>
-      <text x="66" y="86" textAnchor="middle" fontFamily="IBM Plex Mono,monospace" fontSize="8.5"
-            letterSpacing="2" fill="var(--encre-douce)">/ 100</text>
+    <svg width="176" height="176" viewBox="0 0 176 176" role="img"
+         aria-label={`Score ${score} sur 100, confiance ${confiance} %`} style={{ flex: "none" }}>
+      <g transform="rotate(-90 88 88)">
+        <circle cx="88" cy="88" r={R1} fill="none" stroke="var(--fill)" strokeWidth="15" />
+        <circle cx="88" cy="88" r={R1} fill="none" stroke={teinte} strokeWidth="15" strokeLinecap="round"
+                strokeDasharray={C1} strokeDashoffset={anime ? C1 * (1 - score / 100) : C1}
+                style={{ transition: "stroke-dashoffset 1.05s cubic-bezier(.16,1,.3,1)" }} />
+        <circle cx="88" cy="88" r={R2} fill="none" stroke="var(--fill)" strokeWidth="11" />
+        <circle cx="88" cy="88" r={R2} fill="none" stroke="var(--blue)" strokeWidth="11" strokeLinecap="round"
+                strokeDasharray={C2} strokeDashoffset={anime ? C2 * (1 - confiance / 100) : C2}
+                style={{ transition: "stroke-dashoffset 1.05s cubic-bezier(.16,1,.3,1) .12s" }} />
+      </g>
+      <text x="88" y="86" textAnchor="middle" fontSize="40" fontWeight="700"
+            fill="var(--label)" letterSpacing="-1.6"
+            fontFamily="-apple-system,BlinkMacSystemFont,sans-serif">{score}</text>
+      <text x="88" y="106" textAnchor="middle" fontSize="13" fill="var(--label3)"
+            fontFamily="-apple-system,BlinkMacSystemFont,sans-serif">confiance {confiance} %</text>
     </svg>
   );
 }
@@ -385,18 +460,17 @@ export default function Scanner() {
       try {
         const p = await chargerDepuisDataUrl(url, f.name);
         setPhotos((l) => (l.length >= 6 ? l : [...l, p]));
-      } catch { /* fichier illisible, on passe */ }
+      } catch { /* fichier illisible */ }
     }
   }, []);
 
-  /* ── récupération automatique depuis l'URL Vinted ── */
   const recupererAnnonce = async () => {
     if (!annonce.url.trim()) return;
     setCollecte(true); setErr(""); setResultat(null); setJournal([]);
     const log = (t, k = "att") => setJournal((j) => [...j, { t, k }]);
 
     try {
-      log("Lecture de l'annonce…");
+      log("Lecture de l'annonce");
       const r = await fetch(`/api/annonce?url=${encodeURIComponent(annonce.url.trim())}`);
       const d = await r.json();
       if (!r.ok) throw new Error(d.erreur || `Lecture refusée (${r.status}).`);
@@ -407,7 +481,7 @@ export default function Scanner() {
         prix: d.prix ? `${d.prix} €` : a.prix,
         texte: d.description || a.texte,
       }));
-      log(`Annonce lue — ${d.images.length} photo(s) trouvée(s)`, "ok");
+      log(`Annonce lue, ${d.images.length} photos trouvées`, "ok");
 
       const nouvelles = [];
       for (let i = 0; i < Math.min(d.images.length, 5); i++) {
@@ -416,14 +490,14 @@ export default function Scanner() {
           if (!rep.ok) continue;
           const blob = await rep.blob();
           const url = await new Promise((ok) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
-          nouvelles.push(await chargerDepuisDataUrl(url, `photo ${i + 1}`, i === 0 ? "recto" : i === 1 ? "verso" : "autre"));
+          nouvelles.push(await chargerDepuisDataUrl(url, `Photo ${i + 1}`, i === 0 ? "recto" : i === 1 ? "verso" : "autre"));
         } catch { /* photo inaccessible */ }
       }
-      if (!nouvelles.length) throw new Error("Photos inaccessibles. Glissez-les manuellement ci-dessous.");
+      if (!nouvelles.length) throw new Error("Photos inaccessibles. Déposez-les vous-même juste en dessous.");
 
       setPhotos(nouvelles);
-      log(`${nouvelles.length} photo(s) mesurée(s)`, "ok");
-      log("Vérifiez le rôle de chaque photo, puis lancez le contrôle.");
+      log(`${nouvelles.length} photos mesurées`, "ok");
+      log("Vérifiez le rôle de chaque photo, puis lancez le contrôle");
     } catch (e) {
       setErr(e.message);
     } finally { setCollecte(false); }
@@ -438,9 +512,9 @@ export default function Scanner() {
       const retenues = [...photos]
         .sort((a, b) => (PRIORITE[a.role] - PRIORITE[b.role]) || (b.m.pxParMm - a.m.pxParMm))
         .slice(0, 3);
-      log(`Préparation — meilleure densité ${preuve.best?.toFixed(1) ?? 0} px/mm`, "ok");
+      log(`Meilleure densité ${preuve.best?.toFixed(1) ?? 0} px/mm`, "ok");
       const encodees = retenues.map((p) => redimensionner(p.img));
-      log(approfondi ? "Vérification catalogue en ligne…" : "Analyse experte en cours…");
+      log(approfondi ? "Vérification du catalogue en ligne" : "Analyse en cours");
 
       const contexte = retenues.map((p, i) =>
         `Photo ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | reflets ${p.m.reflets}% | noirs bouchés ${p.m.bouches}% | emprise ${p.m.emprise}% | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)`
@@ -504,7 +578,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. Chaque chaîne fai
       const j = extraireJSON(texte);
       if (!j) throw new Error(`Rapport illisible. Début reçu : ${texte.slice(0, 220)}`);
       if (data.stop_reason === "max_tokens") log("Réponse coupée, rapport reconstitué", "ok");
-      log("Rapport reçu", "ok");
+      log("Rapport prêt", "ok");
 
       const confBrute = Math.max(0, Math.min(100, Number(j.confiance) || 0));
       const conf = Math.min(confBrute, preuve.plafond);
@@ -512,7 +586,6 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. Chaque chaîne fai
       if (conf < 45 && verdict === "probablement_authentique") verdict = "indetermine";
       if (j.identification?.coherence === "incoherent") verdict = "probablement_faux";
 
-      log(conf < confBrute ? `Confiance plafonnée à ${conf}% par la qualité des photos` : `Confiance ${conf}%`, "ok");
       setResultat({ ...j, confiance: conf, confBrute, verdict, score: Math.max(0, Math.min(100, Number(j.score) || 0)) });
     } catch (e) {
       setErr(e.message || "Échec de l'analyse.");
@@ -528,242 +601,256 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. Chaque chaîne fai
   const copier = () =>
     navigator.clipboard?.writeText(messageVendeur).then(() => { setCopie(true); setTimeout(() => setCopie(false), 1800); });
 
+  const teinteJauge = preuve.note > 70 ? "var(--green)" : preuve.note > 45 ? "var(--orange)" : "var(--red)";
+
   return (
-    <div className="pc-root">
+    <div className="ap">
       <style>{CSS}</style>
-      <div className="pc-wrap">
-        <header className="pc-bandeau">
-          <div className="pc-eyebrow">
-            <span>⊕ Contrôle d'authenticité</span><span>·</span><span>Pokémon TCG</span>
-            <span>·</span><span>Cabine d'épreuve</span>
-          </div>
-          <h1 className="pc-titre">Ce que la photo prouve vraiment.</h1>
-          <p className="pc-sous">
-            Les faussaires ont rattrapé la typographie, l'holo et la texture. Ce contrôle mesure d'abord ce que
-            les pixels permettent réellement d'affirmer, puis confronte la carte au catalogue officiel — un numéro
-            de collection qui n'existe pas reste bien plus difficile à falsifier qu'un motif holographique.
-          </p>
-          <div className="pc-encres">
-            <span style={{ background: "var(--cyan)" }} /><span style={{ background: "var(--magenta)" }} />
-            <span style={{ background: "var(--jaune)" }} /><span style={{ background: "var(--encre)" }} />
-          </div>
-        </header>
 
-        <div className="pc-grille">
-          <section className="pc-bloc">
-            <div className="pc-bloc-tete">
-              <span className="pc-bloc-titre">Pièces à examiner</span>
-              <span className="pc-bloc-num pc-mono">{photos.length}/6</span>
-            </div>
-            <div className="pc-bloc-corps">
-              <label className="pc-label" htmlFor="pc-url" style={{ marginTop: 0 }}>Lien de l'annonce Vinted</label>
-              <div className="pc-collecte">
-                <input id="pc-url" className="pc-champ" placeholder="https://www.vinted.fr/items/…"
-                       value={annonce.url}
-                       onChange={(e) => setAnnonce({ ...annonce, url: e.target.value })}
-                       onKeyDown={(e) => e.key === "Enter" && recupererAnnonce()} />
-                <button onClick={recupererAnnonce} disabled={collecte || !annonce.url.trim()}>
-                  {collecte ? "…" : "Lire"}
-                </button>
-              </div>
+      <header className="ap-hero">
+        <div className="ap-eyebrow">Contrôle d'authenticité</div>
+        <h1 className="ap-h1">Faux ou authentique.<br />Vous saurez avant d'acheter.</h1>
+        <p className="ap-lead">
+          Collez le lien d'une annonce Vinted. Le contrôle mesure d'abord ce que les photos
+          permettent réellement d'affirmer, puis confronte la carte au catalogue officiel.
+        </p>
+        <div className="ap-recherche">
+          <input className="ap-input" placeholder="vinted.fr/items/…" value={annonce.url}
+                 aria-label="Lien de l'annonce Vinted"
+                 onChange={(e) => setAnnonce({ ...annonce, url: e.target.value })}
+                 onKeyDown={(e) => e.key === "Enter" && recupererAnnonce()} />
+          <button className="ap-btn" onClick={recupererAnnonce} disabled={collecte || !annonce.url.trim()}>
+            {collecte ? "Lecture…" : "Lire l'annonce"}
+          </button>
+        </div>
+      </header>
 
-              <button type="button" className={`pc-depot ${survol ? "actif" : ""}`}
-                      onClick={() => fichierRef.current?.click()}
-                      onDragOver={(e) => { e.preventDefault(); setSurvol(true); }}
-                      onDragLeave={() => setSurvol(false)}
-                      onDrop={(e) => { e.preventDefault(); setSurvol(false); ajouterFichiers(e.dataTransfer.files); }}>
-                <div className="pc-depot-t">Ou déposez les photos ici</div>
-                <div className="pc-depot-s">Recours quand Vinted refuse la lecture automatique.</div>
-              </button>
-              <input ref={fichierRef} type="file" accept="image/*" multiple hidden
-                     onChange={(e) => { ajouterFichiers(e.target.files); e.target.value = ""; }} />
+      <div className="ap-grille">
+        {/* ── colonne des pièces ── */}
+        <section className="ap-carte">
+          <div className="ap-carte-corps">
+            <h2 className="ap-titre-sec">Pièces · {photos.length} sur 6</h2>
 
-              {photos.length > 0 && (
-                <div className="pc-vignettes">
-                  {photos.map((p) => (
-                    <div className="pc-vig" key={p.id}>
-                      <img src={p.url} alt={p.nom} />
-                      <div className="pc-vig-info">
-                        <select className="pc-select" value={p.role}
-                                onChange={(e) => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, role: e.target.value } : q))}>
-                          {ROLES.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
-                        </select>
-                        <div className="pc-metriques">
-                          <b>{p.m.pxParMm}</b> px/mm · netteté <b>{p.m.nettete}</b><br />
-                          reflets <b>{p.m.reflets}%</b> · JPEG <b>{p.m.blocs}</b><br />{p.m.natif}
-                        </div>
+            <button type="button" className={`ap-depot ${survol ? "actif" : ""}`}
+                    onClick={() => fichierRef.current?.click()}
+                    onDragOver={(e) => { e.preventDefault(); setSurvol(true); }}
+                    onDragLeave={() => setSurvol(false)}
+                    onDrop={(e) => { e.preventDefault(); setSurvol(false); ajouterFichiers(e.dataTransfer.files); }}>
+              <div className="ap-depot-t">Déposer des photos</div>
+              <div className="ap-depot-s">Quand Vinted refuse la lecture automatique</div>
+            </button>
+            <input ref={fichierRef} type="file" accept="image/*" multiple hidden
+                   onChange={(e) => { ajouterFichiers(e.target.files); e.target.value = ""; }} />
+
+            {photos.length > 0 && (
+              <div className="ap-groupe" style={{ marginTop: 14 }}>
+                {photos.map((p) => (
+                  <div className="ap-rang" key={p.id}>
+                    <img src={p.url} alt={p.nom} />
+                    <div className="ap-rang-info">
+                      <select className="ap-menu" value={p.role} aria-label={`Rôle de ${p.nom}`}
+                              onChange={(e) => setPhotos((l) => l.map((q) => q.id === p.id ? { ...q, role: e.target.value } : q))}>
+                        {ROLES.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
+                      </select>
+                      <div className="ap-meta ap-mono">
+                        {p.m.pxParMm} px/mm · netteté {p.m.nettete} · reflets {p.m.reflets} %
                       </div>
-                      <button className="pc-suppr" aria-label="Retirer cette photo"
-                              onClick={() => setPhotos((l) => l.filter((q) => q.id !== p.id))}>×</button>
                     </div>
-                  ))}
-                </div>
-              )}
+                    <button className="ap-x" aria-label="Retirer cette photo"
+                            onClick={() => setPhotos((l) => l.filter((q) => q.id !== p.id))}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
 
-              <label className="pc-label" htmlFor="pc-titre">Titre</label>
-              <input id="pc-titre" className="pc-champ" value={annonce.titre}
+            <div className="ap-champ">
+              <label className="ap-lbl" htmlFor="ap-t">Titre de l'annonce</label>
+              <input id="ap-t" className="ap-input" value={annonce.titre}
                      onChange={(e) => setAnnonce({ ...annonce, titre: e.target.value })} />
-
-              <label className="pc-label" htmlFor="pc-prix">Prix demandé</label>
-              <input id="pc-prix" className="pc-champ" value={annonce.prix}
-                     onChange={(e) => setAnnonce({ ...annonce, prix: e.target.value })} />
-
-              <label className="pc-label" htmlFor="pc-desc">Description du vendeur</label>
-              <textarea id="pc-desc" className="pc-zone" value={annonce.texte}
-                        onChange={(e) => setAnnonce({ ...annonce, texte: e.target.value })} />
-
-              <label className="pc-bascule">
-                <input type="checkbox" checked={approfondi} onChange={(e) => setApprofondi(e.target.checked)} />
-                <span>
-                  <span className="pc-bascule-t">Vérifier le numéro dans le catalogue en ligne</span>
-                  <span className="pc-bascule-s"> — confronte extension, numéro et rareté aux bases publiques. Plus lent.</span>
-                </span>
-              </label>
-
-              <button className="pc-action" disabled={!photos.length || occupe || collecte} onClick={lancer}>
-                {occupe ? "Analyse en cours…" : "Lancer le contrôle"}
-              </button>
-
-              {photos.length > 0 && (
-                <div className="pc-jauge">
-                  <div className="pc-jauge-l"><span>Qualité de preuve</span><span>{preuve.note}/100</span></div>
-                  <div className="pc-jauge-p">
-                    <i style={{ width: `${preuve.note}%`, background: preuve.note > 70 ? "var(--cyan)" : preuve.note > 45 ? "var(--jaune)" : "var(--magenta)" }} />
-                  </div>
-                  <div className="pc-metriques" style={{ marginTop: 6 }}>
-                    Plafonne la confiance du verdict à {preuve.plafond}%.
-                  </div>
-                </div>
-              )}
             </div>
-          </section>
+            <div className="ap-champ">
+              <label className="ap-lbl" htmlFor="ap-p">Prix demandé</label>
+              <input id="ap-p" className="ap-input" value={annonce.prix}
+                     onChange={(e) => setAnnonce({ ...annonce, prix: e.target.value })} />
+            </div>
+            <div className="ap-champ">
+              <label className="ap-lbl" htmlFor="ap-d">Description du vendeur</label>
+              <textarea id="ap-d" className="ap-zone" value={annonce.texte}
+                        onChange={(e) => setAnnonce({ ...annonce, texte: e.target.value })} />
+            </div>
 
-          <section>
-            {journal.length > 0 && (
-              <div className="pc-bloc" style={{ marginBottom: 20 }}>
-                <div className="pc-bloc-tete">
-                  <span className="pc-bloc-titre">Journal</span>
-                  <span className="pc-bloc-num pc-mono">{occupe || collecte ? "en cours" : "terminé"}</span>
+            <div className="ap-reglage">
+              <div style={{ flex: 1 }}>
+                <div className="ap-reglage-t">Vérifier le catalogue</div>
+                <div className="ap-reglage-s">Confronte extension, numéro et rareté aux bases publiques. Plus lent.</div>
+              </div>
+              <label className="ap-switch">
+                <input type="checkbox" checked={approfondi} aria-label="Vérifier le catalogue en ligne"
+                       onChange={(e) => setApprofondi(e.target.checked)} />
+                <span className="ap-piste" /><span className="ap-pastille" />
+              </label>
+            </div>
+
+            <button className="ap-btn pleine" style={{ marginTop: 18 }}
+                    disabled={!photos.length || occupe || collecte} onClick={lancer}>
+              {occupe ? "Analyse en cours…" : "Lancer le contrôle"}
+            </button>
+
+            {photos.length > 0 && (
+              <div className="ap-jauge">
+                <div className="ap-jauge-l">
+                  <span>Qualité de preuve</span>
+                  <span className="ap-mono">{preuve.note} / 100</span>
                 </div>
-                <div className="pc-bloc-corps pc-journal">
+                <div className="ap-piste-j"><i style={{ width: `${preuve.note}%`, background: teinteJauge }} /></div>
+                <div className="ap-meta">Plafonne la confiance du verdict à {preuve.plafond} %.</div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* ── colonne du rapport ── */}
+        <section style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+          {journal.length > 0 && (
+            <div className="ap-carte">
+              <div className="ap-carte-corps">
+                <h2 className="ap-titre-sec">{occupe || collecte ? "En cours" : "Terminé"}</h2>
+                <div className="ap-etapes">
                   {journal.map((l, i) => (
-                    <div key={i} className={l.k}><span>{l.k === "ok" ? "✓" : "·"}</span><span>{l.t}</span></div>
+                    <div key={i} className={`ap-etape ${l.k === "ok" ? "faite" : ""}`}>
+                      <span className="ap-pastille-e">{l.k === "ok" ? "✓" : "·"}</span>
+                      <span>{l.t}</span>
+                    </div>
                   ))}
                 </div>
               </div>
-            )}
+            </div>
+          )}
 
-            {err && (
-              <div className="pc-bloc" style={{ marginBottom: 20 }}>
-                <div className="pc-bloc-corps"><div className="pc-erreur">{err}</div></div>
+          {err && (
+            <div className="ap-carte"><div className="ap-carte-corps"><div className="ap-alerte">{err}</div></div></div>
+          )}
+
+          {!res && !occupe && !err && (
+            <div className="ap-carte">
+              <div className="ap-vide">
+                <svg width="46" height="46" viewBox="0 0 46 46" fill="none" aria-hidden="true">
+                  <circle cx="21" cy="21" r="13" stroke="var(--label3)" strokeWidth="2.4" />
+                  <path d="M30.5 30.5L40 40" stroke="var(--label3)" strokeWidth="2.4" strokeLinecap="round" />
+                </svg>
+                <div className="ap-vide-t">Aucun contrôle en cours</div>
+                <div className="ap-vide-s">Le recto et le verso suffisent pour démarrer.</div>
               </div>
-            )}
+            </div>
+          )}
 
-            {!res && !occupe && !err && (
-              <div className="pc-bloc">
-                <div className="pc-bloc-tete">
-                  <span className="pc-bloc-titre">Rapport</span>
-                  <span className="pc-bloc-num pc-mono">en attente</span>
-                </div>
-                <div className="pc-vide">
-                  <div className="pc-vide-t">Aucune pièce déposée</div>
-                  <div className="pc-vide-s">
-                    Collez le lien de l'annonce et cliquez sur Lire.<br />
-                    Le recto et le verso suffisent pour démarrer.
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {res && (
-              <div className="pc-bloc">
-                <div className="pc-mire">
-                  <Mire score={res.score} confiance={res.confiance} verdict={res.verdict} />
-                  <div className="pc-mire-txt">
-                    <div className="pc-verdict" style={{ color: COULEURS[res.verdict] }}>{LIBELLES[res.verdict]}</div>
-                    <div className="pc-verdict-s">{res.resume}</div>
-                    <div className="pc-jauge">
-                      <div className="pc-jauge-l"><span>Confiance</span><span>{res.confiance}%</span></div>
-                      <div className="pc-jauge-p"><i style={{ width: `${res.confiance}%`, background: COULEURS[res.verdict] }} /></div>
-                    </div>
+          {res && (
+            <>
+              <div className="ap-carte">
+                <div className="ap-verdict">
+                  <Anneaux score={res.score} confiance={res.confiance} teinte={TEINTE[res.verdict]} />
+                  <div className="ap-verdict-txt">
+                    <span className="ap-badge" style={{
+                      background: `color-mix(in srgb, ${TEINTE[res.verdict]} 16%, transparent)`,
+                      color: TEINTE[res.verdict],
+                    }}>{BADGE[res.verdict]}</span>
+                    <h2 className="ap-v-titre">{LIBELLE[res.verdict]}</h2>
+                    <p className="ap-v-sous">{res.resume}</p>
                     {res.confiance < res.confBrute && (
-                      <div className="pc-metriques" style={{ marginTop: 7 }}>
-                        Abaissée depuis {res.confBrute}% : les photos ne permettent pas d'aller plus loin.
-                      </div>
+                      <p className="ap-meta">Confiance abaissée depuis {res.confBrute} % : les photos ne permettent pas d'aller plus loin.</p>
                     )}
                   </div>
                 </div>
 
                 {res.identification && (
-                  <div className="pc-bloc-corps" style={{ borderBottom: "1px solid var(--trait)" }}>
-                    <div className="pc-bloc-titre" style={{ marginBottom: 9 }}>Identification</div>
-                    <div className="pc-metriques">
-                      <b>{res.identification.carte || "—"}</b><br />
-                      {res.identification.extension || "extension inconnue"} · n° {res.identification.numero || "—"} · {res.identification.langue || "—"}<br />
-                      <span style={{ color: res.identification.coherence === "incoherent" ? "var(--magenta)" : res.identification.coherence === "coherent" ? "var(--cyan)" : "inherit" }}>
+                  <div className="ap-carte-corps" style={{ paddingTop: 0 }}>
+                    <div className="ap-groupe" style={{ padding: "13px 15px" }}>
+                      <div style={{ fontSize: 17, fontWeight: 600, letterSpacing: "-.015em" }}>
+                        {res.identification.carte || "Carte non identifiée"}
+                      </div>
+                      <div className="ap-meta" style={{ marginTop: 4 }}>
+                        {res.identification.extension || "extension inconnue"} · n° {res.identification.numero || "—"} · {res.identification.langue || "—"}
+                      </div>
+                      <div style={{
+                        marginTop: 7, fontSize: 14, fontWeight: 500,
+                        color: res.identification.coherence === "incoherent" ? "var(--red)"
+                             : res.identification.coherence === "coherent" ? "var(--green)" : "var(--label2)",
+                      }}>
                         Catalogue : {res.identification.coherence || "indéterminé"}
-                      </span>{res.identification.note ? ` — ${res.identification.note}` : ""}
+                        {res.identification.note ? ` — ${res.identification.note}` : ""}
+                      </div>
                     </div>
                   </div>
                 )}
+              </div>
 
-                {Array.isArray(res.controles) && res.controles.length > 0 && (
-                  <div className="pc-bloc-corps" style={{ borderBottom: "1px solid var(--trait)" }}>
-                    <div className="pc-bloc-titre" style={{ marginBottom: 5 }}>Contrôles</div>
+              {Array.isArray(res.controles) && res.controles.length > 0 && (
+                <div className="ap-carte">
+                  <div className="ap-carte-corps">
+                    <h2 className="ap-titre-sec">Contrôles</h2>
                     {res.controles.map((c, i) => (
-                      <div className="pc-ctrl" key={i}>
-                        <div style={{
-                          background: c.verdict === "suspect" ? "var(--magenta)" : c.verdict === "conforme" ? "var(--cyan)" : "var(--gris-fonce)",
-                          marginTop: 4, height: "calc(100% - 8px)",
+                      <div className="ap-constat" key={i}>
+                        <span className="ap-point" style={{
+                          background: c.verdict === "suspect" ? "var(--red)"
+                                    : c.verdict === "conforme" ? "var(--green)" : "var(--label3)",
                         }} />
                         <div>
-                          <div className="pc-ctrl-zone">{c.zone} · {c.verdict === "non_verifiable" ? "non vérifiable" : c.verdict}</div>
-                          <div className="pc-ctrl-crit">{c.critere}</div>
-                          <div className="pc-ctrl-obs">{c.observation}</div>
+                          <div className="ap-c-zone">{c.zone} · {c.verdict === "non_verifiable" ? "non vérifiable" : c.verdict}</div>
+                          <div className="ap-c-titre">{c.critere}</div>
+                          <div className="ap-c-obs">{c.observation}</div>
                         </div>
                       </div>
                     ))}
                   </div>
-                )}
+                </div>
+              )}
 
-                {Array.isArray(res.drapeaux) && res.drapeaux.filter(Boolean).length > 0 && (
-                  <div className="pc-bloc-corps" style={{ borderBottom: "1px solid var(--trait)" }}>
-                    <div className="pc-bloc-titre" style={{ marginBottom: 5, color: "var(--magenta)" }}>Anomalies retenues</div>
-                    <ul className="pc-liste">
-                      {res.drapeaux.filter(Boolean).map((d, i) => (
-                        <li key={i}><span className="pc-puce" style={{ color: "var(--magenta)" }}>▲</span><span>{d}</span></li>
-                      ))}
-                    </ul>
+              {(res.drapeaux?.filter(Boolean).length > 0 || res.positifs?.filter(Boolean).length > 0) && (
+                <div className="ap-carte">
+                  <div className="ap-carte-corps">
+                    {res.drapeaux?.filter(Boolean).length > 0 && (
+                      <>
+                        <h2 className="ap-titre-sec">Anomalies</h2>
+                        <ul className="ap-puces" style={{ marginBottom: 18 }}>
+                          {res.drapeaux.filter(Boolean).map((d, i) => (
+                            <li key={i}><Alerte c="var(--red)" /><span>{d}</span></li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                    {res.positifs?.filter(Boolean).length > 0 && (
+                      <>
+                        <h2 className="ap-titre-sec">Éléments conformes</h2>
+                        <ul className="ap-puces">
+                          {res.positifs.filter(Boolean).map((d, i) => (
+                            <li key={i}><Coche c="var(--green)" /><span>{d}</span></li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
                   </div>
-                )}
+                </div>
+              )}
 
-                {Array.isArray(res.positifs) && res.positifs.filter(Boolean).length > 0 && (
-                  <div className="pc-bloc-corps" style={{ borderBottom: "1px solid var(--trait)" }}>
-                    <div className="pc-bloc-titre" style={{ marginBottom: 5, color: "var(--cyan)" }}>Éléments conformes</div>
-                    <ul className="pc-liste">
-                      {res.positifs.filter(Boolean).map((d, i) => (
-                        <li key={i}><span className="pc-puce" style={{ color: "var(--cyan)" }}>●</span><span>{d}</span></li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                <div className="pc-bloc-corps">
-                  <div className="pc-bloc-titre" style={{ marginBottom: 9 }}>Message à envoyer au vendeur</div>
-                  <div className="pc-msg">{messageVendeur}</div>
-                  <button className="pc-copier" onClick={copier}>{copie ? "Copié" : "Copier le message"}</button>
+              <div className="ap-carte">
+                <div className="ap-carte-corps">
+                  <h2 className="ap-titre-sec">Message au vendeur</h2>
+                  <div className="ap-msg">{messageVendeur}</div>
+                  <button className="ap-btn discret" style={{ marginTop: 12 }} onClick={copier}>
+                    {copie ? "Copié" : "Copier"}
+                  </button>
                 </div>
               </div>
-            )}
-
-            <div className="pc-pied">
-              Le contrôle porte sur des photographies, pas sur la carte. Il oriente une décision d'achat ;
-              il ne remplace pas un examen en main ni une notation professionnelle. Sur une carte à forte
-              valeur, la certitude passe par PSA, BGS ou CGC.
-            </div>
-          </section>
-        </div>
+            </>
+          )}
+        </section>
       </div>
+
+      <p className="ap-pied">
+        Le contrôle porte sur des photographies, pas sur la carte. Il oriente une décision d'achat ;
+        il ne remplace pas un examen en main ni une notation professionnelle.
+        Sur une carte à forte valeur, la certitude passe par PSA, BGS ou CGC.
+      </p>
     </div>
   );
 }
