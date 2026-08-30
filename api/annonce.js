@@ -80,8 +80,9 @@ export default async function handler(req, res) {
     const description = decoder(
       html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/)?.[1]
     );
-    const prix =
-      html.match(/"(?:price|total_item_price)"\s*:\s*(?:\{[^}]*"amount"\s*:\s*)?"?([\d.,]+)"?/)?.[1] || "";
+    const prix = (
+      html.match(/"(?:price|total_item_price)"\s*:\s*(?:\{[^}]*"amount"\s*:\s*)?"?([\d.,]+)"?/)?.[1] || ""
+    ).replace(/[.,]$/, "").replace(/[.,]00$/, ""); // « 2, » et « 2,00 » deviennent « 2 »
 
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({ url: cible, titre, description, prix, images });

@@ -379,7 +379,7 @@ const LIBELLE = {
   probablement_faux: "Très probablement une contrefaçon",
 };
 const BADGE = {
-  probablement_authentique: "Aucune anomalie",
+  probablement_authentique: "Authentique probable",
   indetermine: "Preuves insuffisantes",
   suspect: "À vérifier",
   probablement_faux: "Contrefaçon",
@@ -545,7 +545,7 @@ Règles strictes :
 - Si la densité px/mm est insuffisante pour un critère, marque-le "non_verifiable" au lieu de deviner.
 - Se tromper dans les deux sens coûte cher. Préfère "indetermine" assorti d'une liste précise de photos à réclamer.
 
-Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. Chaque chaîne fait au plus 110 caractères, 7 contrôles maximum :
+Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 7 contrôles maximum. Chaque chaîne fait au plus 110 caractères, sauf "resume" et "observation" qui vont jusqu'à 280. Le "resume" tient en deux phrases :
 {"identification":{"carte":"","extension":"","numero":"","langue":"","coherence":"coherent|incoherent|indetermine","note":""},
 "controles":[{"zone":"","critere":"","observation":"","verdict":"conforme|suspect|non_verifiable"}],
 "drapeaux":[""],"positifs":[""],
@@ -755,12 +755,17 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. Chaque chaîne fai
                       color: TEINTE[res.verdict],
                     }}>{BADGE[res.verdict]}</span>
                     <h2 className="ap-v-titre">{LIBELLE[res.verdict]}</h2>
-                    <p className="ap-v-sous">{res.resume}</p>
                     {res.confiance < res.confBrute && (
                       <p className="ap-meta">Confiance abaissée depuis {res.confBrute} % : les photos ne permettent pas d'aller plus loin.</p>
                     )}
                   </div>
                 </div>
+
+                {res.resume && (
+                  <div className="ap-carte-corps" style={{ paddingTop: 0 }}>
+                    <p className="ap-v-sous" style={{ margin: 0 }}>{res.resume}</p>
+                  </div>
+                )}
 
                 {res.identification && (
                   <div className="ap-carte-corps" style={{ paddingTop: 0 }}>
