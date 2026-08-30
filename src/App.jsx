@@ -187,6 +187,21 @@ const CSS = `
 .ap-pied{ max-width:1080px; margin:34px auto 0; padding:0 24px; font-size:13px;
   line-height:1.5; color:var(--label3); text-align:center; }
 
+/* ─ calibration ─ */
+.ap-calib{ display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:1px;
+  background:var(--sep); border-radius:var(--r-m); overflow:hidden; }
+.ap-calib > div{ background:var(--surface); padding:14px 15px; }
+.ap-calib-n{ font-size:26px; font-weight:700; letter-spacing:-.03em; line-height:1.1; }
+.ap-calib-l{ font-size:12.5px; color:var(--label3); margin-top:3px; line-height:1.35; }
+
+.ap-verite{ display:inline-flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.ap-verite button{ border:1px solid var(--sep-fort); background:transparent; cursor:pointer;
+  font-family:inherit; font-size:12.5px; font-weight:500; color:var(--label2);
+  padding:4px 11px; border-radius:980px; transition:all .16s; }
+.ap-verite button:hover{ border-color:var(--label3); }
+.ap-verite button[aria-pressed="true"].vraie{ background:var(--green); border-color:var(--green); color:#fff; }
+.ap-verite button[aria-pressed="true"].fausse{ background:var(--red); border-color:var(--red); color:#fff; }
+
 /* ─ sélecteur segmenté ─ */
 .ap-seg{ display:inline-flex; background:var(--fill); border-radius:8px; padding:2px; gap:2px; }
 .ap-seg button{ border:none; background:none; cursor:pointer; font-family:inherit; font-size:12px;
@@ -559,6 +574,67 @@ function scorer(controles, identification) {
   };
 }
 
+/* ── calibration ───────────────────────────────────────────────
+   Un outil qui ne se confronte jamais au réel ne fait que produire
+   des avis. Dès qu'une carte est confirmée vraie ou fausse — par un
+   expert, une notation, un test de tranche — on peut mesurer deux
+   choses : est-ce que les verdicts tombaient juste, et existe-t-il
+   un écart colorimétrique réel entre les vraies et les fausses de
+   cette collection. Les seuils cessent alors d'être devinés.
+
+   Prudence assumée : en dessous de trois exemplaires par camp, on
+   n'affiche aucune conclusion. Deux points ne font pas une loi.  */
+const MIN_CALIB = 3;
+
+function calibration(historique) {
+  const etiq = historique.filter((e) => e.verite === "vraie" || e.verite === "fausse");
+  const vraies = etiq.filter((e) => e.verite === "vraie");
+  const fausses = etiq.filter((e) => e.verite === "fausse");
+
+  let justes = 0, ratees = 0, alertesVaines = 0, prudentes = 0;
+  for (const e of etiq) {
+    const d = e.verdict;
+    if (e.verite === "fausse") {
+      if (d === "probablement_faux" || d === "suspect") justes++;
+      else if (d === "probablement_authentique") ratees++;   // l'erreur la plus coûteuse
+      else prudentes++;
+    } else {
+      if (d === "probablement_authentique") justes++;
+      else if (d === "probablement_faux") alertesVaines++;
+      else prudentes++;
+    }
+  }
+
+  const moyenne = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+  const ecart = (a) => {
+    if (a.length < 2) return 0;
+    const m = moyenne(a);
+    return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (a.length - 1));
+  };
+  const sat = (l) => l.map((e) => e.metriques?.satMoy).filter((n) => typeof n === "number" && n > 0);
+
+  const sv = sat(vraies), sf = sat(fausses);
+  const mv = moyenne(sv), mf = moyenne(sf);
+  const ev = ecart(sv), ef = ecart(sf);
+  const commun = Math.sqrt((ev * ev + ef * ef) / 2) || 0;
+  const separation = commun > 0 ? Math.abs(mv - mf) / commun : 0;
+
+  const exploitable = sv.length >= MIN_CALIB && sf.length >= MIN_CALIB;
+
+  return {
+    total: etiq.length, nVraies: vraies.length, nFausses: fausses.length,
+    justes, ratees, alertesVaines, prudentes,
+    satVraies: Math.round(mv * 10) / 10, satFausses: Math.round(mf * 10) / 10,
+    ecartVraies: Math.round(ev * 10) / 10, ecartFausses: Math.round(ef * 10) / 10,
+    nSatVraies: sv.length, nSatFausses: sf.length,
+    separation: Math.round(separation * 100) / 100,
+    exploitable,
+    // Une séparation supérieure à 0.8 correspond à un écart franc entre
+    // les deux populations ; en dessous, les nuages se recouvrent trop.
+    concluante: exploitable && separation >= 0.8,
+  };
+}
+
 const TEINTE = {
   probablement_authentique: "var(--green)",
   indetermine: "var(--orange)",
@@ -646,6 +722,35 @@ export default function Scanner() {
     () => historique.reduce((a, e) => a + (e.tokens?.entree || 0) + (e.tokens?.sortie || 0), 0),
     [historique]
   );
+
+  const calib = useMemo(() => calibration(historique), [historique]);
+
+  const etiqueter = (id, verite) =>
+    majHistorique(historique.map((e) => e.id === id ? { ...e, verite: e.verite === verite ? null : verite } : e));
+
+  const exporter = () => {
+    const blob = new Blob([JSON.stringify(historique, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `scanpoke-historique-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+
+  const importerRef = useRef(null);
+  const importer = async (f) => {
+    try {
+      const l = JSON.parse(await f.text());
+      if (!Array.isArray(l)) throw new Error("Fichier inattendu");
+      const vus = new Set();
+      const fusion = [...l, ...historique]
+        .filter((e) => e && e.id && e.rapport)
+        .sort((a, b) => (b.date || 0) - (a.date || 0))
+        .filter((e) => { const c = normaliserUrl(e.url) || e.id; if (vus.has(c)) return false; vus.add(c); return true; })
+        .slice(0, MAX_HIST);
+      majHistorique(fusion);
+    } catch { setErr("Fichier d'historique illisible."); }
+  };
 
   const preuve = useMemo(() => plafondPreuve(photos), [photos]);
 
@@ -745,6 +850,19 @@ export default function Scanner() {
           }`
         : "";
 
+      const satSujet = retenues.length
+        ? Math.round((retenues.reduce((a, p) => a + (p.m.satMoy || 0), 0) / retenues.length) * 10) / 10
+        : 0;
+
+      const calibTexte = calib.exploitable
+        ? `\n\nRÉFÉRENCE MESURÉE SUR CETTE COLLECTION — ${calib.nSatVraies} cartes confirmées authentiques et ${calib.nSatFausses} confirmées fausses, photographiées dans des conditions comparables :
+saturation moyenne des authentiques : ${calib.satVraies} % (écart-type ${calib.ecartVraies})
+saturation moyenne des contrefaçons : ${calib.satFausses} % (écart-type ${calib.ecartFausses})
+séparation des deux populations : ${calib.separation} ${calib.concluante ? "— écart franc, ce critère est exploitable ici" : "— les deux nuages se recouvrent, ce critère reste faible et ne doit pas peser lourd"}
+la carte analysée mesure ${satSujet} %.
+Utilise cette référence plutôt que des seuils génériques, mais uniquement au poids que la séparation justifie.`
+        : "";
+
       const consigne = `Tu es expert en authentification de cartes Pokémon TCG à partir de photos d'annonces de seconde main.
 
 RÈGLE CENTRALE — ASYMÉTRIE DES INDICES.
@@ -759,7 +877,7 @@ ${contexte}
 
 Lisibilité : <8 px/mm la carte est à peine distinguable ; 8-15 gros éléments ; 15-30 le texte des attaques ; 30-60 micro-typographie ; >60 trame d'impression.
 Biais de perspective : 1.00 = photo bien à plat. Au-delà de 1.10, le centrage, l'épaisseur de bordure et le crénage sont déformés — marque ces critères "non_verifiable".
-Saturation : mesurée après neutralisation de la lumière ambiante sur le fond de la photo. Une saturation moyenne nettement plus élevée que sur une carte d'époque comparable oriente vers une réimpression récente.${refTexte}
+Saturation : mesurée après neutralisation de la lumière ambiante sur le fond de la photo. Une saturation moyenne nettement plus élevée que sur une carte d'époque comparable oriente vers une réimpression récente.${calibTexte}${refTexte}
 
 Annonce : titre="${annonce.titre || "non fourni"}" | prix="${annonce.prix || "non fourni"}" | description="${(annonce.texte || "non fournie").slice(0, 700)}"
 
@@ -845,6 +963,8 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
       };
       setResultat(rapport);
 
+      const moyM = (f) => Math.round((retenues.reduce((a, p) => a + (p.m[f] || 0), 0) / retenues.length) * 10) / 10;
+
       majHistorique([{
         id: crypto.randomUUID(),
         date: Date.now(),
@@ -853,6 +973,13 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
         prix: annonce.prix,
         vignette: miniature(retenues[0].img),
         verdict, score: rapport.score, confiance: conf,
+        verite: null,
+        metriques: {
+          satMoy: satSujet, satP90: moyM("satP90"), partVive: moyM("partVive"),
+          pxParMm: Math.max(...retenues.map((p) => p.m.pxParMm || 0)),
+          biais: Math.min(...retenues.map((p) => p.m.biais || 99)),
+          nettete: moyM("nettete"),
+        },
         tokens, rapport,
       }, ...historique.filter((e) => normaliserUrl(e.url) !== normaliserUrl(annonce.url))].slice(0, MAX_HIST));
     } catch (e) {
@@ -1144,6 +1271,28 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
 
               <div className="ap-carte">
                 <div className="ap-carte-corps">
+                  <h2 className="ap-titre-sec">Vous avez la réponse ?</h2>
+                  <p className="ap-meta" style={{ marginTop: 0, marginBottom: 11 }}>
+                    Après un test de tranche, une notation ou l'avis d'un expert, confirmez ici.
+                    Chaque carte confirmée règle les seuils sur votre collection au lieu de valeurs devinées.
+                  </p>
+                  {(() => {
+                    const entree = historique.find((e) => normaliserUrl(e.url) === normaliserUrl(annonce.url)) || historique[0];
+                    if (!entree) return null;
+                    return (
+                      <span className="ap-verite">
+                        <button className="vraie" aria-pressed={entree.verite === "vraie"}
+                                onClick={() => etiqueter(entree.id, "vraie")}>Confirmée vraie</button>
+                        <button className="fausse" aria-pressed={entree.verite === "fausse"}
+                                onClick={() => etiqueter(entree.id, "fausse")}>Confirmée fausse</button>
+                      </span>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              <div className="ap-carte">
+                <div className="ap-carte-corps">
                   <h2 className="ap-titre-sec">Message au vendeur</h2>
                   <div className="ap-msg">{messageVendeur}</div>
                   <button className="ap-btn discret" style={{ marginTop: 12 }} onClick={copier}>
@@ -1155,6 +1304,75 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
           )}
         </section>
       </div>
+
+      {historique.length > 0 && (
+        <section className="ap-hist" style={{ marginBottom: 22 }}>
+          <div className="ap-hist-tete">
+            <div>
+              <h2 className="ap-titre-sec" style={{ margin: 0 }}>Calibration</h2>
+              <div className="ap-meta">
+                {calib.total === 0
+                  ? "Confirmez des cartes ci-dessous pour que l'outil se mesure au réel."
+                  : `${calib.total} carte${calib.total > 1 ? "s" : ""} confirmée${calib.total > 1 ? "s" : ""} · ${calib.nVraies} vraie${calib.nVraies > 1 ? "s" : ""}, ${calib.nFausses} fausse${calib.nFausses > 1 ? "s" : ""}`}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="ap-btn discret" onClick={exporter}>Exporter</button>
+              <button className="ap-btn discret" onClick={() => importerRef.current?.click()}>Importer</button>
+              <input ref={importerRef} type="file" accept="application/json" hidden
+                     onChange={(e) => { if (e.target.files?.[0]) importer(e.target.files[0]); e.target.value = ""; }} />
+            </div>
+          </div>
+
+          {calib.total > 0 && (
+            <div className="ap-calib">
+              <div>
+                <div className="ap-calib-n" style={{ color: "var(--green)" }}>{calib.justes}</div>
+                <div className="ap-calib-l">verdicts justes</div>
+              </div>
+              <div>
+                <div className="ap-calib-n" style={{ color: calib.ratees ? "var(--red)" : "var(--label3)" }}>{calib.ratees}</div>
+                <div className="ap-calib-l">fausses annoncées authentiques</div>
+              </div>
+              <div>
+                <div className="ap-calib-n" style={{ color: "var(--label3)" }}>{calib.prudentes}</div>
+                <div className="ap-calib-l">restées indéterminées</div>
+              </div>
+              <div>
+                <div className="ap-calib-n" style={{ color: calib.alertesVaines ? "var(--orange)" : "var(--label3)" }}>{calib.alertesVaines}</div>
+                <div className="ap-calib-l">vraies accusées à tort</div>
+              </div>
+            </div>
+          )}
+
+          {calib.total > 0 && (
+            <div className="ap-carte" style={{ marginTop: 14 }}>
+              <div className="ap-carte-corps">
+                <h3 className="ap-titre-sec">Saturation mesurée</h3>
+                {calib.exploitable ? (
+                  <>
+                    <div style={{ fontSize: 15, lineHeight: 1.6, color: "var(--label2)" }}>
+                      Authentiques : <b style={{ color: "var(--green)" }}>{calib.satVraies} %</b> (± {calib.ecartVraies}, n = {calib.nSatVraies})<br />
+                      Contrefaçons : <b style={{ color: "var(--red)" }}>{calib.satFausses} %</b> (± {calib.ecartFausses}, n = {calib.nSatFausses})
+                    </div>
+                    <div className="ap-meta" style={{ marginTop: 9 }}>
+                      Séparation {calib.separation} — {calib.concluante
+                        ? "écart franc, ce critère pèse désormais dans l'analyse de vos cartes."
+                        : "les deux nuages se recouvrent, le critère reste faible et n'est utilisé qu'avec prudence."}
+                    </div>
+                  </>
+                ) : (
+                  <div className="ap-meta">
+                    Il faut au moins {MIN_CALIB} cartes confirmées de chaque camp pour conclure quoi que ce soit.
+                    Actuellement {calib.nVraies} vraie{calib.nVraies > 1 ? "s" : ""} et {calib.nFausses} fausse{calib.nFausses > 1 ? "s" : ""}.
+                    Deux points ne font pas une loi.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       {historique.length > 0 && (
         <section className="ap-hist">
@@ -1174,8 +1392,8 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
           <div className="ap-carte">
             <div className="ap-groupe" style={{ borderRadius: 0, background: "transparent" }}>
               {historique.map((e) => (
-                <div key={e.id} style={{ display: "flex", alignItems: "center" }}>
-                  <button className="ap-hist-rang" onClick={() => rouvrir(e)}>
+                <div key={e.id} style={{ display: "flex", alignItems: "center", flexWrap: "wrap" }}>
+                  <button className="ap-hist-rang" onClick={() => rouvrir(e)} style={{ flex: "1 1 240px", width: "auto" }}>
                     {e.vignette
                       ? <img src={e.vignette} alt="" />
                       : <span style={{ width: 38, height: 53, borderRadius: 6, background: "var(--fill)", flex: "none" }} />}
@@ -1184,6 +1402,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                       <span className="ap-meta" style={{ display: "block" }}>
                         {dateCourte(e.date)}
                         {e.prix ? ` · ${e.prix}` : ""}
+                        {e.metriques?.satMoy ? ` · sat ${e.metriques.satMoy} %` : ""}
                         {` · ${milliers((e.tokens?.entree || 0) + (e.tokens?.sortie || 0))} tokens`}
                       </span>
                     </span>
@@ -1192,7 +1411,13 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                       color: TEINTE[e.verdict],
                     }}>{e.score}</span>
                   </button>
-                  <button className="ap-x" style={{ margin: "0 13px 0 4px" }}
+                  <span className="ap-verite" style={{ padding: "0 8px" }}>
+                    <button className="vraie" aria-pressed={e.verite === "vraie"}
+                            onClick={() => etiqueter(e.id, "vraie")}>Vraie</button>
+                    <button className="fausse" aria-pressed={e.verite === "fausse"}
+                            onClick={() => etiqueter(e.id, "fausse")}>Fausse</button>
+                  </span>
+                  <button className="ap-x" style={{ margin: "0 13px 0 0" }}
                           aria-label={`Retirer ${e.titre} de l'historique`}
                           onClick={() => oublier(e.id)}>×</button>
                 </div>
