@@ -3,10 +3,9 @@
  * base de données ouverte et gratuite du Pokémon TCG, indépendante de
  * Vinted et de notre propre analyse d'image.
  *
- * Objectif précis : dire dans quelles langues cette carte a RÉELLEMENT
- * été imprimée. C'est un fait de catalogue, pas une mesure de pixels —
- * beaucoup plus fiable pour distinguer japonais / chinois / européen
- * que n'importe quelle heuristique de couleur.
+ * Objectif précis : vérifier les langues connues par TCGdex pour cette carte.
+ * C'est un signal de catalogue utile, mais la base peut être incomplète —
+ * notamment pour certains marchés asiatiques — et ne doit jamais suffire seule.
  *
  * TCGdex n'a pas de clé, mais on passe par ce relais pour éviter tout
  * souci de CORS côté navigateur et pour ne faire qu'un aller-retour
@@ -15,8 +14,9 @@
 
 const LANGUES = ["en", "fr", "de", "es", "it", "pt", "ja", "zh-tw", "id", "th"];
 
-async function chercherCandidats(nom) {
-  const url = `https://api.tcgdex.net/v2/en/cards?name=${encodeURIComponent(nom)}`;
+async function chercherCandidats(nom, langue = "en") {
+  const code = LANGUES.includes(langue) ? langue : "en";
+  const url = `https://api.tcgdex.net/v2/${code}/cards?name=${encodeURIComponent(nom)}`;
   const r = await fetch(url);
   if (!r.ok) return [];
   const liste = await r.json();
@@ -36,13 +36,15 @@ function meilleurCandidat(liste, numero) {
 export default async function handler(req, res) {
   const nom = String(req.query.nom || "").trim();
   const numero = String(req.query.numero || "").trim();
+  const langueDemandee = String(req.query.langue || "en").trim().toLowerCase();
 
   if (!nom) {
     return res.status(400).json({ erreur: "Nom de carte manquant." });
   }
 
   try {
-    const candidats = await chercherCandidats(nom);
+    let candidats = await chercherCandidats(nom, langueDemandee);
+    if (!candidats.length && langueDemandee !== "en") candidats = await chercherCandidats(nom, "en");
     const candidat = meilleurCandidat(candidats, numero);
 
     if (!candidat) {
