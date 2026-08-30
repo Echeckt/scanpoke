@@ -357,6 +357,14 @@ function mesurerImage(img) {
 
   let sSom = 0, sN = 0, vives = 0;
   const echSat = [];
+  // Zones utiles : le centre porte la Poké Ball, le pourtour porte
+  // la bordure jaune des faces avant.
+  const cx0 = minX + (maxX - minX) * 0.35, cx1 = minX + (maxX - minX) * 0.65;
+  const cy0 = minY + (maxY - minY) * 0.35, cy1 = minY + (maxY - minY) * 0.65;
+  const mx0 = minX + (maxX - minX) * 0.08, mx1 = maxX - (maxX - minX) * 0.08;
+  const my0 = minY + (maxY - minY) * 0.08, my1 = maxY - (maxY - minY) * 0.08;
+  let bleus = 0, jaunes = 0, rougesC = 0, nC = 0, jaunesB = 0, nB = 0;
+
   for (let y = Math.max(0, minY); y <= Math.min(h - 1, maxY); y++)
     for (let x = Math.max(0, minX); x <= Math.min(w - 1, maxX); x++) {
       const p = y * w + x;
@@ -369,11 +377,34 @@ function mesurerImage(img) {
       sSom += sat; sN++;
       if (sat > 0.8) vives++;
       if ((sN & 7) === 0) echSat.push(sat);
+
+      const dl = mx - mn;
+      let teinte = 0;
+      if (dl > 0) {
+        if (mx === r) teinte = 60 * ((((g - b) / dl) % 6) + 6) % 360;
+        else if (mx === g) teinte = 60 * ((b - r) / dl + 2);
+        else teinte = 60 * ((r - g) / dl + 4);
+        if (teinte < 0) teinte += 360;
+      }
+      const estBleu = teinte >= 190 && teinte <= 255 && sat > 0.22;
+      const estJaune = teinte >= 38 && teinte <= 72 && sat > 0.3;
+      const estRouge = (teinte < 18 || teinte > 342) && sat > 0.35;
+      if (estBleu) bleus++;
+      if (estJaune) jaunes++;
+
+      const auCentre = x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1;
+      if (auCentre) { nC++; if (estRouge) rougesC++; }
+      const auBord = x < mx0 || x > mx1 || y < my0 || y > my1;
+      if (auBord) { nB++; if (estJaune) jaunesB++; }
     }
   echSat.sort((a, b) => a - b);
   const satMoy = sN ? Math.round((sSom / sN) * 1000) / 10 : 0;
   const satP90 = echSat.length ? Math.round(echSat[Math.floor(echSat.length * 0.9)] * 1000) / 10 : 0;
   const partVive = sN ? Math.round((vives / sN) * 1000) / 10 : 0;
+  const partBleu = sN ? Math.round((bleus / sN) * 1000) / 10 : 0;
+  const partJaune = sN ? Math.round((jaunes / sN) * 1000) / 10 : 0;
+  const rougeCentre = nC ? Math.round((rougesC / nC) * 1000) / 10 : 0;
+  const jauneBord = nB ? Math.round((jaunesB / nB) * 1000) / 10 : 0;
 
   /* ── géométrie ─────────────────────────────────────────────────
      Une photo prise de biais rend le centrage, l'épaisseur de bordure
@@ -393,7 +424,33 @@ function mesurerImage(img) {
   return {
     natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm, nettete, reflets, bouches, emprise, blocs,
     periodicite, pasTrame: lagPic, satMoy, satP90, partVive, biais, ratio,
+    partBleu, partJaune, rougeCentre, jauneBord,
   };
+}
+
+/* ── reconnaissance automatique du rôle ────────────────────────
+   Le dos est le seul motif rigoureusement identique sur toutes les
+   cartes jamais imprimées : vaste champ bleu, rayons blancs, Poké
+   Ball rouge et blanche au centre. C'est donc la face la plus facile
+   à reconnaître de tout le jeu, et il n'y avait aucune raison de la
+   deviner par l'ordre d'arrivée des photos.                      */
+function deduireRole(m) {
+  const formeCarte = m.ratio > 0 && Math.abs(m.ratio - 0.716) < 0.14;
+
+  // Un recadrage serré remplit presque tout le cadre ; un lot de cartes
+  // laisse voir le fond entre les cartes et autour. C'est ce qui les sépare.
+  if (!formeCarte && m.emprise > 72) return "macro";
+  if (m.ratio > 1.05 && m.emprise >= 40 && m.emprise <= 72) return "lot";
+  if (!formeCarte && m.emprise > 55) return "macro";
+
+  // Bleu dominant plus rouge au centre : c'est la Poké Ball.
+  if (m.partBleu > 26 && m.rougeCentre > 6) return "verso";
+  // Bleu massif suffit, même si le centre est masqué par un doigt ou un reflet.
+  if (m.partBleu > 42) return "verso";
+  // Bordure jaune franche sur le pourtour : face avant moderne ou Wizards.
+  if (m.jauneBord > 16) return "recto";
+
+  return m.partBleu > 20 ? "verso" : "recto";
 }
 
 function redimensionner(img, max = 1400, q = 0.85) {
@@ -828,8 +885,10 @@ export default function Scanner() {
     });
     let m;
     try { m = mesurerImage(img); }
-    catch { m = { natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm: 0, nettete: 0, reflets: 0, bouches: 0, emprise: 0, blocs: 1, periodicite: 0, pasTrame: 0 }; }
-    return { id: crypto.randomUUID(), nom, url, img, m, role: roleForce || "recto" };
+    catch { m = { natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm: 0, nettete: 0, reflets: 0, bouches: 0, emprise: 0, blocs: 1, periodicite: 0, pasTrame: 0, satMoy: 0, partBleu: 0, ratio: 0 }; }
+    let role;
+    try { role = roleForce || deduireRole(m); } catch { role = roleForce || "recto"; }
+    return { id: crypto.randomUUID(), nom, url, img, m, role, sujet: true };
   };
 
   const ajouterFichiers = useCallback(async (fichiers) => {
@@ -869,7 +928,7 @@ export default function Scanner() {
           if (!rep.ok) continue;
           const blob = await rep.blob();
           const url = await new Promise((ok) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
-          nouvelles.push(await chargerDepuisDataUrl(url, `Photo ${i + 1}`, i === 0 ? "recto" : i === 1 ? "verso" : "autre"));
+          nouvelles.push(await chargerDepuisDataUrl(url, `Photo ${i + 1}`)); // le rôle est reconnu par la mesure
         } catch { /* photo inaccessible */ }
       }
       if (!nouvelles.length) throw new Error("Photos inaccessibles. Déposez-les vous-même juste en dessous.");
