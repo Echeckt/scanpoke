@@ -36,3 +36,9 @@ console Anthropic.
 - Les mesures du bleu du dos (saturation, teinte, luminosité) sont transmises à l'analyse.
 - Les anomalies ont maintenant une gravité : faible, forte ou rédhibitoire.
 - Une contradiction rédhibitoire ne peut plus être compensée par des détails faciles à copier.
+
+## v1.2 — garde-fou colorimétrique local
+- Le score ne dépend plus du fait que le modèle pense à reporter le bleu délavé dans `controles`.
+- Mesure relative bleu vs rouge Poké Ball / jaune du logo dans la même photo.
+- Si le bleu est très faible alors que rouge/jaune restent francs et que le blanc central reste neutre, un contrôle local rédhibitoire est injecté.
+- Une anomalie locale rédhibitoire force le score d'authenticité à 0/100 et un plancher de confiance de 92% pour ce défaut précis.

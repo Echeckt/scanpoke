@@ -395,6 +395,7 @@ function mesurerImage(img) {
   const mx0 = minX + (maxX - minX) * 0.08, mx1 = maxX - (maxX - minX) * 0.08;
   const my0 = minY + (maxY - minY) * 0.08, my1 = maxY - (maxY - minY) * 0.08;
   let bleus = 0, jaunes = 0, rougesC = 0, nC = 0, jaunesB = 0, nB = 0, satBleuSom = 0, nBleu = 0;
+  let satJauneSom = 0, nJaune = 0, satRougeCentreSom = 0, nRougeCentre = 0;
   let teinteBleuSom = 0, lumBleuSom = 0;
   let sommeBruitC = 0, nBruitC = 0, teintePrecC = null, xPrecC = null;
 
@@ -426,11 +427,11 @@ function mesurerImage(img) {
         bleus++; satBleuSom += sat; nBleu++;
         teinteBleuSom += teinte; lumBleuSom += mx / 255;
       }
-      if (estJaune) jaunes++;
+      if (estJaune) { jaunes++; satJauneSom += sat; nJaune++; }
 
       const auCentre = x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1;
       if (auCentre) {
-        nC++; if (estRouge) rougesC++;
+        nC++; if (estRouge) { rougesC++; satRougeCentreSom += sat; nRougeCentre++; }
         // Un aplat imprimé (la Poké Ball) est fait de quelques zones de
         // couleur unie : la teinte ne saute qu'aux quelques pixels de
         // frontière entre elles. Une illustration ou un fond holographique
@@ -468,6 +469,9 @@ function mesurerImage(img) {
   // international, plus clair. Sert uniquement à une suggestion automatique
   // d'édition, jamais imposée — c'est un repère, pas une mesure calibrée.
   const satBleu = nBleu ? Math.round((satBleuSom / nBleu) * 1000) / 10 : 0;
+  const satJaune = nJaune ? Math.round((satJauneSom / nJaune) * 1000) / 10 : 0;
+  const satRougeCentre = nRougeCentre ? Math.round((satRougeCentreSom / nRougeCentre) * 1000) / 10 : 0;
+  const contrasteSatDos = Math.round((Math.max(satJaune, satRougeCentre) - satBleu) * 10) / 10;
   const teinteBleu = nBleu ? Math.round((teinteBleuSom / nBleu) * 10) / 10 : 0;
   const lumBleu = nBleu ? Math.round((lumBleuSom / nBleu) * 1000) / 10 : 0;
 
@@ -529,7 +533,7 @@ function mesurerImage(img) {
   return {
     natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm, nettete, reflets, bouches, emprise, blocs,
     periodicite, pasTrame: lagPic, satMoy, satP90, partVive, biais, ratio,
-    partBleu, partJaune, rougeCentre, jauneBord, bruitTeinteCentre, satBleu, teinteBleu, lumBleu,
+    partBleu, partJaune, rougeCentre, jauneBord, bruitTeinteCentre, satBleu, satJaune, satRougeCentre, contrasteSatDos, teinteBleu, lumBleu,
     partBleuCentreImage, partJauneCentreImage, partBlancCoeurImage,
     balanceCouleur: balanceFiable ? "fond_neutre" : "brute", ratioFond: Math.round(ratioFond * 100) / 100,
   };
@@ -757,7 +761,7 @@ function scorer(controles, identification, confiance = 100) {
 
   // Une contradiction visuelle réellement rédhibitoire ne doit jamais être
   // compensée par cinq détails faciles à copier qui paraissent conformes.
-  if (redhibitoire) score = Math.min(score, 5);
+  if (redhibitoire) score = 0;
 
   // Rien de probant observé : on ne peut pas dépasser le doute raisonnable,
   // quelle que soit la beauté de la photo.
@@ -782,6 +786,76 @@ function scorer(controles, identification, confiance = 100) {
     probantsVus, reproductiblesVus, redhibitoire,
     plafonneFauteDeProbant: probantsVus === 0,
   };
+}
+
+/* ── garde-fou local sur le dos ────────────────────────────────
+   Le modèle peut voir une anomalie, la décrire dans le résumé, puis
+   oublier de la reporter dans `controles`. Le score ne la voit alors
+   jamais. Cette règle ne dépend donc PAS du LLM : elle compare, dans
+   la même photo, la saturation du bleu du dos avec deux encres qui
+   devraient rester très saturées (rouge de la Poké Ball et jaune du
+   logo). Une lumière globale ou une balance des blancs imparfaite
+   affecte les trois ; un bleu effondré alors que rouge/jaune restent
+   francs est un signal beaucoup plus robuste.                         */
+function controlesDosDeterministes(photos) {
+  const controles = [];
+
+  for (const p of Array.isArray(photos) ? photos : []) {
+    if (p?.role !== "verso") continue;
+    const m = p.m || {};
+    const bleuPresent = Math.max(Number(m.partBleu || 0), Number(m.partBleuCentreImage || 0)) >= 18;
+    const blancPresent = Number(m.partBlancCoeurImage || 0) >= 4;
+    const satBleu = Number(m.satBleu || 0);
+    const satJaune = Number(m.satJaune || 0);
+    const satRouge = Number(m.satRougeCentre || 0);
+    const ref = Math.max(satJaune, satRouge);
+    const ecart = Number.isFinite(Number(m.contrasteSatDos))
+      ? Number(m.contrasteSatDos)
+      : Math.round((ref - satBleu) * 10) / 10;
+
+    if (!bleuPresent || !blancPresent || satBleu <= 0 || ref <= 0) continue;
+
+    // Cas extrêmement parlant : le bleu s'effondre alors que les encres
+    // rouge/jaune de LA MÊME photo restent vives. Sur le Rayquaza test,
+    // on est autour de 43 % de bleu contre ~70 %+ pour les repères.
+    if (satBleu <= 46 && ref >= 62 && ecart >= 20) {
+      controles.push({
+        zone: "Dos",
+        critere: "Colorimétrie relative du bleu",
+        categorie: "difficile",
+        gravite: "redhibitoire",
+        observation: `Bleu ${satBleu}% contre ${Math.round(ref * 10) / 10}% sur rouge/jaune (écart ${Math.round(ecart * 10) / 10} pts), avec blanc central encore neutre. Le défaut n'est pas expliqué par une simple dominante globale.`,
+        verdict: "suspect",
+        source: "mesure_locale",
+      });
+      continue;
+    }
+
+    // Zone d'alerte : on condamne moins fort, mais on empêche un résultat
+    // rassurant tant qu'une meilleure photo du dos n'a pas été fournie.
+    if (satBleu <= 52 && ref >= 60 && ecart >= 15) {
+      controles.push({
+        zone: "Dos",
+        critere: "Colorimétrie relative du bleu",
+        categorie: "difficile",
+        gravite: "forte",
+        observation: `Bleu ${satBleu}% nettement moins saturé que les repères rouge/jaune (${Math.round(ref * 10) / 10}%, écart ${Math.round(ecart * 10) / 10} pts). Une meilleure photo du dos est requise.`,
+        verdict: "suspect",
+        source: "mesure_locale",
+      });
+    }
+  }
+
+  return controles;
+}
+
+function fusionnerControles(modele, locaux) {
+  const l = Array.isArray(locaux) ? locaux : [];
+  let m = Array.isArray(modele) ? modele : [];
+  if (l.some((c) => c.zone === "Dos" && /color/i.test(c.critere || ""))) {
+    m = m.filter((c) => !(String(c.zone || "").toLowerCase().includes("dos") && /color|bleu|saturation|teinte/i.test(String(c.critere || ""))));
+  }
+  return [...l, ...m].slice(0, 8);
 }
 
 /* ── calibration ───────────────────────────────────────────────
@@ -1195,7 +1269,7 @@ export default function Scanner() {
           ? ` | suggestion automatique d'édition du dos (à vérifier toi-même sur l'image, pas un fait acquis) : ${p.edition}`
           : "";
         const mesureDos = p.role === "verso"
-          ? ` | bleu détecté ${p.m.partBleu ?? 0}% (centre photo ${p.m.partBleuCentreImage ?? 0}%) | saturation bleu ${p.m.satBleu ?? 0}% | teinte bleu ${p.m.teinteBleu ?? 0}° | luminosité bleu ${p.m.lumBleu ?? 0}% | balance couleur ${p.m.balanceCouleur || "brute"}`
+          ? ` | bleu détecté ${p.m.partBleu ?? 0}% (centre photo ${p.m.partBleuCentreImage ?? 0}%) | saturation bleu ${p.m.satBleu ?? 0}% | saturation jaune ${p.m.satJaune ?? 0}% | saturation rouge Poké Ball ${p.m.satRougeCentre ?? 0}% | écart saturation interne ${p.m.contrasteSatDos ?? 0} pts | teinte bleu ${p.m.teinteBleu ?? 0}° | luminosité bleu ${p.m.lumBleu ?? 0}% | balance couleur ${p.m.balanceCouleur || "brute"}`
           : "";
         return `${prefixe} ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | biais perspective ${p.m.biais || "n/d"} | reflets ${p.m.reflets}% | saturation moyenne ${p.m.satMoy}% (p90 ${p.m.satP90}%, part très vive ${p.m.partVive}%) | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)${mesureDos}${indiceDos}`;
       };
@@ -1297,10 +1371,32 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
       const j = extraireJSON(texte);
       if (!j) throw new Error(`Rapport illisible. Début reçu : ${texte.slice(0, 220)}`);
       if (data.stop_reason === "max_tokens") log("Réponse coupée, rapport reconstitué", "ok");
-      log("Rapport prêt", "ok");
+
+      // IMPORTANT : les mesures locales sont fusionnées APRÈS la réponse IA.
+      // Ainsi, un modèle qui écrit « bleu délavé » dans le résumé mais oublie
+      // de créer le contrôle correspondant ne peut plus laisser le score à 48.
+      const controlesLocaux = controlesDosDeterministes(retenues);
+      j.controles = fusionnerControles(j.controles, controlesLocaux);
+      const redhibitoireLocal = controlesLocaux.some((c) => c.gravite === "redhibitoire");
+      const anomalieForteLocale = controlesLocaux.some((c) => c.gravite === "forte");
+
+      if (controlesLocaux.length) {
+        const d = controlesLocaux[0];
+        j.drapeaux = [d.observation, ...(Array.isArray(j.drapeaux) ? j.drapeaux : [])].filter(Boolean).slice(0, 6);
+      }
+      if (redhibitoireLocal) {
+        j.resume = `Le dos déclenche le garde-fou colorimétrique local : ${controlesLocaux[0].observation} Cette anomalie est traitée comme rédhibitoire et ne dépend pas de l'interprétation du modèle.`;
+      }
+
+      log(controlesLocaux.length ? "Rapport prêt · contrôle local du dos appliqué" : "Rapport prêt", "ok");
 
       const confBrute = Math.max(0, Math.min(100, Number(j.confiance) || 0));
-      const conf = Math.min(confBrute, preuve.plafond);
+      let conf = Math.min(confBrute, preuve.plafond);
+      // Le plafond lié aux px/mm concerne surtout texte/trame. Une contradiction
+      // colorimétrique relative sur des milliers de pixels reste lisible à faible
+      // densité ; elle dispose donc de son propre plancher de confiance.
+      if (redhibitoireLocal) conf = Math.max(conf, 92);
+      else if (anomalieForteLocale) conf = Math.max(conf, 72);
 
       // Le score n'est plus celui du modèle : il découle des catégories,
       // donc un critère reproductible conforme ne peut plus le gonfler.
@@ -1326,6 +1422,8 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
         score: note.score,
         probantsVus: note.probantsVus,
         redhibitoire: note.redhibitoire,
+        redhibitoireLocal,
+        anomalieForteLocale,
         plafonneFauteDeProbant: note.plafonneFauteDeProbant,
         avecReference: retenuesRef.length > 0,
       };
@@ -1584,6 +1682,11 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                     <h2 className="ap-v-titre">{LIBELLE[res.verdict]}</h2>
                     {res.confiance < res.confBrute && (
                       <p className="ap-meta">Confiance abaissée depuis {res.confBrute} % : les photos ne permettent pas d'aller plus loin.</p>
+                    )}
+                    {res.redhibitoireLocal && (
+                      <p className="ap-meta" style={{ color: "var(--red)", marginTop: 7 }}>
+                        Garde-fou local déclenché : anomalie colorimétrique du dos mesurée indépendamment de l'IA.
+                      </p>
                     )}
                   </div>
                 </div>
