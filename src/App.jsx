@@ -357,19 +357,34 @@ function mesurerImage(img) {
   const periodicite = moy > 0 ? Math.round((pic / moy) * 100) / 100 : 0;
 
   /* ── colorimétrie ──────────────────────────────────────────────
-     Le pourtour de la photo sert d'étalon de lumière : on ramène le
-     fond au neutre avant de mesurer, sinon une lampe chaude suffit à
-     faire passer une carte pour sursaturée. Les presses de 1996 ont
-     un gamut plus étroit que les imprimantes actuelles : une
-     saturation trop haute est un signal de réimpression.          */
+     La couleur est mesurée avec une correction de balance seulement
+     lorsque le pourtour de la photo est réellement proche du neutre.
+     Sur une annonce, une main ou un canapé coloré ne doit jamais servir
+     de charte grise : sinon on fabrique artificiellement du bleu.    */
   let br = 0, bgv = 0, bbv = 0, bn = 0;
   const bord3 = (p) => { const i = p * 4; br += d[i]; bgv += d[i + 1]; bbv += d[i + 2]; bn++; };
   for (let x = 0; x < w; x += 3) { bord3(x); bord3((h - 1) * w + x); }
   for (let y = 0; y < h; y += 3) { bord3(y * w); bord3(y * w + w - 1); }
-  const cible = bn ? (br + bgv + bbv) / (3 * bn) : 128;
-  const kr = br > 0 ? cible / (br / bn) : 1;
-  const kg = bgv > 0 ? cible / (bgv / bn) : 1;
-  const kb = bbv > 0 ? cible / (bbv / bn) : 1;
+  const moyR = bn ? br / bn : 128;
+  const moyG = bn ? bgv / bn : 128;
+  const moyB = bn ? bbv / bn : 128;
+  const cible = (moyR + moyG + moyB) / 3;
+
+  /* Le pourtour n'est PAS forcément une charte grise : sur une photo Vinted
+     il peut être constitué d'une main, d'un canapé rouge ou d'un mur chaud.
+     L'ancienne version neutralisait systématiquement ce fond et pouvait, par
+     exemple, multiplier artificiellement le canal bleu par 1.6×. Résultat :
+     précisément le bleu délavé d'un faux dos pouvait être "corrigé" vers un
+     bleu plausible. On n'applique donc la balance que si le pourtour est déjà
+     suffisamment neutre et homogène ; sinon on conserve les couleurs brutes. */
+  const maxFond = Math.max(moyR, moyG, moyB);
+  const minFond = Math.max(1, Math.min(moyR, moyG, moyB));
+  const ratioFond = maxFond / minFond;
+  const balanceFiable = bn > 20 && minFond > 24 && ratioFond <= 1.22;
+  const borneGain = (v) => Math.max(0.88, Math.min(1.14, v));
+  const kr = balanceFiable && moyR > 0 ? borneGain(cible / moyR) : 1;
+  const kg = balanceFiable && moyG > 0 ? borneGain(cible / moyG) : 1;
+  const kb = balanceFiable && moyB > 0 ? borneGain(cible / moyB) : 1;
 
   let sSom = 0, sN = 0, vives = 0;
   const echSat = [];
@@ -380,6 +395,7 @@ function mesurerImage(img) {
   const mx0 = minX + (maxX - minX) * 0.08, mx1 = maxX - (maxX - minX) * 0.08;
   const my0 = minY + (maxY - minY) * 0.08, my1 = maxY - (maxY - minY) * 0.08;
   let bleus = 0, jaunes = 0, rougesC = 0, nC = 0, jaunesB = 0, nB = 0, satBleuSom = 0, nBleu = 0;
+  let teinteBleuSom = 0, lumBleuSom = 0;
   let sommeBruitC = 0, nBruitC = 0, teintePrecC = null, xPrecC = null;
 
   for (let y = Math.max(0, minY); y <= Math.min(h - 1, maxY); y++)
@@ -387,7 +403,7 @@ function mesurerImage(img) {
       const p = y * w + x;
       if (Math.abs(L[p] - fond) <= 26) continue;
       const i = p * 4;
-      const r = d[i] * kr, g = d[i + 1] * kg, b = d[i + 2] * kb;
+      const r = Math.min(255, d[i] * kr), g = Math.min(255, d[i + 1] * kg), b = Math.min(255, d[i + 2] * kb);
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
       if (mx < 12) continue;
       const sat = (mx - mn) / mx;
@@ -406,7 +422,10 @@ function mesurerImage(img) {
       const estBleu = teinte >= 190 && teinte <= 255 && sat > 0.22;
       const estJaune = teinte >= 38 && teinte <= 72 && sat > 0.3;
       const estRouge = (teinte < 18 || teinte > 342) && sat > 0.35;
-      if (estBleu) { bleus++; satBleuSom += sat; nBleu++; }
+      if (estBleu) {
+        bleus++; satBleuSom += sat; nBleu++;
+        teinteBleuSom += teinte; lumBleuSom += mx / 255;
+      }
       if (estJaune) jaunes++;
 
       const auCentre = x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1;
@@ -449,6 +468,48 @@ function mesurerImage(img) {
   // international, plus clair. Sert uniquement à une suggestion automatique
   // d'édition, jamais imposée — c'est un repère, pas une mesure calibrée.
   const satBleu = nBleu ? Math.round((satBleuSom / nBleu) * 1000) / 10 : 0;
+  const teinteBleu = nBleu ? Math.round((teinteBleuSom / nBleu) * 10) / 10 : 0;
+  const lumBleu = nBleu ? Math.round((lumBleuSom / nBleu) * 1000) / 10 : 0;
+
+  /* Signature centrale indépendante du détourage. Le vieux détourage par
+     luminance peut englober une main ou un canapé ; le dos, lui, reste
+     généralement au centre de la photo. Cette mesure sert surtout à ne pas
+     étiqueter un dos évident comme "macro" avant même l'analyse IA. */
+  let nCentreImage = 0, bleuCentreImage = 0, jauneCentreImage = 0;
+  let nCoeurImage = 0, blancCoeurImage = 0;
+  const xCi0 = Math.floor(w * .18), xCi1 = Math.ceil(w * .82);
+  const yCi0 = Math.floor(h * .14), yCi1 = Math.ceil(h * .86);
+  const xCo0 = Math.floor(w * .32), xCo1 = Math.ceil(w * .68);
+  const yCo0 = Math.floor(h * .32), yCo1 = Math.ceil(h * .68);
+
+  for (let y = yCi0; y < yCi1; y++)
+    for (let x = xCi0; x < xCi1; x++) {
+      const i = (y * w + x) * 4;
+      const r = Math.min(255, d[i] * kr), g = Math.min(255, d[i + 1] * kg), b = Math.min(255, d[i + 2] * kb);
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      if (mx < 12) continue;
+      const sat = (mx - mn) / mx;
+      const dl = mx - mn;
+      let teinte = 0;
+      if (dl > 0) {
+        if (mx === r) teinte = 60 * ((((g - b) / dl) % 6) + 6) % 360;
+        else if (mx === g) teinte = 60 * ((b - r) / dl + 2);
+        else teinte = 60 * ((r - g) / dl + 4);
+        if (teinte < 0) teinte += 360;
+      }
+      nCentreImage++;
+      if (teinte >= 190 && teinte <= 255 && sat > .22) bleuCentreImage++;
+      if (teinte >= 38 && teinte <= 72 && sat > .30) jauneCentreImage++;
+
+      if (x >= xCo0 && x < xCo1 && y >= yCo0 && y < yCo1) {
+        nCoeurImage++;
+        if (sat < .22 && mx / 255 > .55) blancCoeurImage++;
+      }
+    }
+
+  const partBleuCentreImage = nCentreImage ? Math.round((bleuCentreImage / nCentreImage) * 1000) / 10 : 0;
+  const partJauneCentreImage = nCentreImage ? Math.round((jauneCentreImage / nCentreImage) * 1000) / 10 : 0;
+  const partBlancCoeurImage = nCoeurImage ? Math.round((blancCoeurImage / nCoeurImage) * 1000) / 10 : 0;
 
   /* ── géométrie ─────────────────────────────────────────────────
      Une photo prise de biais rend le centrage, l'épaisseur de bordure
@@ -468,7 +529,9 @@ function mesurerImage(img) {
   return {
     natif: `${img.naturalWidth}×${img.naturalHeight}`, pxParMm, nettete, reflets, bouches, emprise, blocs,
     periodicite, pasTrame: lagPic, satMoy, satP90, partVive, biais, ratio,
-    partBleu, partJaune, rougeCentre, jauneBord, bruitTeinteCentre, satBleu,
+    partBleu, partJaune, rougeCentre, jauneBord, bruitTeinteCentre, satBleu, teinteBleu, lumBleu,
+    partBleuCentreImage, partJauneCentreImage, partBlancCoeurImage,
+    balanceCouleur: balanceFiable ? "fond_neutre" : "brute", ratioFond: Math.round(ratioFond * 100) / 100,
   };
 }
 
@@ -481,11 +544,10 @@ function mesurerImage(img) {
 function deduireRole(m) {
   const formeCarte = m.ratio > 0 && Math.abs(m.ratio - 0.716) < 0.14;
 
-  // Un recadrage serré remplit presque tout le cadre ; un lot de cartes
-  // laisse voir le fond entre les cartes et autour. C'est ce qui les sépare.
-  if (!formeCarte && m.emprise > 72) return "macro";
-  if (m.ratio > 1.05 && m.emprise >= 40 && m.emprise <= 72) return "lot";
-  if (!formeCarte && m.emprise > 55) return "macro";
+  // Le motif d'un dos évident prime sur le détourage géométrique : dans une
+  // photo tenue en main, le vieux masque de luminance peut prendre toute la
+  // main pour la carte et produire à tort "macro".
+  if ((m.partBleuCentreImage || 0) > 18 && (m.partBlancCoeurImage || 0) > 7) return "verso";
 
   // Bleu dominant plus rouge au centre : c'est la Poké Ball — mais seulement
   // si ce centre est un aplat imprimé. Un Pokémon rouge/orange sur fond
@@ -498,7 +560,14 @@ function deduireRole(m) {
   // Bordure jaune franche sur le pourtour : face avant moderne ou Wizards.
   if (m.jauneBord > 16) return "recto";
 
-  return m.partBleu > 20 ? "verso" : "recto";
+  // Un recadrage serré remplit presque tout le cadre ; un lot de cartes
+  // laisse voir le fond entre les cartes et autour. Ces tests passent APRÈS
+  // la signature du dos pour éviter les faux "macro".
+  if (!formeCarte && m.emprise > 72) return "macro";
+  if (m.ratio > 1.05 && m.emprise >= 40 && m.emprise <= 72) return "lot";
+  if (!formeCarte && m.emprise > 55) return "macro";
+
+  return (m.partBleu > 20 || (m.partBleuCentreImage || 0) > 16) ? "verso" : "recto";
 }
 
 /* ── suggestion d'édition du dos (japonais / international) ──────
@@ -508,7 +577,7 @@ function deduireRole(m) {
    un vrai échantillon — c'est pour ça que l'appli l'affiche comme une
    suggestion modifiable, jamais comme un fait acquis.               */
 function suggererEdition(m) {
-  if (m.partBleu < 15) return "indetermine"; // pas assez de bleu pour juger
+  if (Math.max(m.partBleu || 0, m.partBleuCentreImage || 0) < 15) return "indetermine"; // pas assez de bleu pour juger
   return m.satBleu >= 58 ? "japonaise" : "internationale";
 }
 
@@ -664,6 +733,7 @@ const POIDS = {
 function scorer(controles, identification, confiance = 100) {
   const l = Array.isArray(controles) ? controles : [];
   let credit = 0, charge = 0, probantsVus = 0, reproductiblesVus = 0;
+  let redhibitoire = false;
 
   for (const c of l) {
     const cat = POIDS[c.categorie] ? c.categorie : "reproductible";
@@ -671,11 +741,23 @@ function scorer(controles, identification, confiance = 100) {
     if (c.verdict === "non_verifiable") continue;
     if (cat === "difficile") probantsVus++;
     if (cat === "reproductible") reproductiblesVus++;
-    if (c.verdict === "suspect") charge += p.charge;
-    else if (c.verdict === "conforme") credit += p.credit;
+
+    const gravite = ["faible", "forte", "redhibitoire"].includes(c.gravite) ? c.gravite : "faible";
+    if (c.verdict === "suspect") {
+      if (gravite === "redhibitoire") redhibitoire = true;
+      const multiplicateur = gravite === "forte" ? 1.55 : gravite === "redhibitoire" ? 2.4 : 1;
+      charge += p.charge * multiplicateur;
+    } else if (c.verdict === "conforme") {
+      // Une conformité ne devient jamais plus probante grâce à la gravité.
+      credit += p.credit;
+    }
   }
 
   let score = 50 + credit * 2.6 - charge * 5.4;
+
+  // Une contradiction visuelle réellement rédhibitoire ne doit jamais être
+  // compensée par cinq détails faciles à copier qui paraissent conformes.
+  if (redhibitoire) score = Math.min(score, 5);
 
   // Rien de probant observé : on ne peut pas dépasser le doute raisonnable,
   // quelle que soit la beauté de la photo.
@@ -697,7 +779,7 @@ function scorer(controles, identification, confiance = 100) {
 
   return {
     score: Math.max(0, Math.min(100, Math.round(score))),
-    probantsVus, reproductiblesVus,
+    probantsVus, reproductiblesVus, redhibitoire,
     plafonneFauteDeProbant: probantsVus === 0,
   };
 }
@@ -1112,7 +1194,10 @@ export default function Scanner() {
         const indiceDos = p.role === "verso" && p.edition && p.edition !== "indetermine"
           ? ` | suggestion automatique d'édition du dos (à vérifier toi-même sur l'image, pas un fait acquis) : ${p.edition}`
           : "";
-        return `${prefixe} ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | biais perspective ${p.m.biais || "n/d"} | reflets ${p.m.reflets}% | saturation moyenne ${p.m.satMoy}% (p90 ${p.m.satP90}%, part très vive ${p.m.partVive}%) | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)${indiceDos}`;
+        const mesureDos = p.role === "verso"
+          ? ` | bleu détecté ${p.m.partBleu ?? 0}% (centre photo ${p.m.partBleuCentreImage ?? 0}%) | saturation bleu ${p.m.satBleu ?? 0}% | teinte bleu ${p.m.teinteBleu ?? 0}° | luminosité bleu ${p.m.lumBleu ?? 0}% | balance couleur ${p.m.balanceCouleur || "brute"}`
+          : "";
+        return `${prefixe} ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | biais perspective ${p.m.biais || "n/d"} | reflets ${p.m.reflets}% | saturation moyenne ${p.m.satMoy}% (p90 ${p.m.satP90}%, part très vive ${p.m.partVive}%) | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)${mesureDos}${indiceDos}`;
       };
 
       const contexte = retenues.map((p, i) => decrire(p, i, "Photo sujet")).join("\n");
@@ -1145,12 +1230,18 @@ Prix, vocabulaire de l'annonce, mise en scène des photos : "contextuel".
 
 NE FAIS JAMAIS MONTER TA CONFIANCE PARCE QU'UN ÉLÉMENT REPRODUCTIBLE EST DEVENU LISIBLE. La lisibilité est une propriété de l'appareil photo, pas de la carte.
 
+GRAVITÉ DES ANOMALIES — champ obligatoire "gravite" pour chaque contrôle :
+- "faible" : détail ambigu, compatible avec photo/éclairage/usure.
+- "forte" : défaut net, difficile à expliquer autrement qu'une copie.
+- "redhibitoire" : contradiction matérielle ou visuelle impossible sur le tirage authentique. Un seul contrôle suspect + redhibitoire doit suffire à condamner la carte.
+Pour le DOS INTERNATIONAL en particulier : juge les couleurs RELATIVEMENT aux zones blanches/neutres de la Poké Ball et aux autres couleurs de la même photo. Si les blancs restent plausibles mais que le champ bleu est franchement délavé, gris-bleu, cyan/turquoise, anormalement uniforme ou d'une intensité manifestement incompatible avec le dos Pokémon international, ce n'est pas une simple variation d'éclairage. Classe COLORIMÉTRIE = suspect, gravite = redhibitoire si l'écart est massif et clairement visible. En revanche, si toute la photo porte une dominante globale cohérente, n'en fais pas un verdict absolu.
+
 Mesures effectuées sur les pixels :
 ${contexte}
 
 Lisibilité : <8 px/mm la carte est à peine distinguable ; 8-15 gros éléments ; 15-30 le texte des attaques ; 30-60 micro-typographie ; >60 trame d'impression. Cette échelle parle de FINESSE — texte, trame, micro-détail. La couleur d'ensemble d'une zone (le bleu du dos, le rouge de la Poké Ball, le jaune de la bordure) se juge sur une moyenne de milliers de pixels : elle reste jugeable même à 8-15 px/mm ou sur un seul angle fixe. Ne te sers JAMAIS d'une densité faible ou d'un angle unique comme excuse pour classer la colorimétrie "non_verifiable" — ça, c'est vrai pour l'holographie (qui a besoin de plusieurs angles) et pour la trame d'impression (qui a besoin de finesse), pas pour une teinte dominante.
 Biais de perspective : 1.00 = photo bien à plat. Au-delà de 1.10, le centrage, l'épaisseur de bordure et le crénage sont déformés — marque ces critères "non_verifiable".
-Saturation : mesurée après neutralisation de la lumière ambiante sur le fond de la photo. Attention, l'écart joue DANS LES DEUX SENS : les contrefaçons sont soit trop vives, soit trop ternes et délavées par rapport à la carte d'époque. Une saturation anormalement basse est un signal au même titre qu'une saturation haute.${calibTexte}${refTexte}
+Saturation : la balance de couleur n'est appliquée que si le pourtour de l'image est réellement assez neutre ; sinon les mesures restent brutes (voir "balance couleur" dans chaque photo). Attention, l'écart joue DANS LES DEUX SENS : les contrefaçons sont soit trop vives, soit trop ternes et délavées par rapport à la carte d'époque. Une saturation anormalement basse est un signal au même titre qu'une saturation haute.${calibTexte}${refTexte}
 
 ${SAVOIR}
 
@@ -1160,7 +1251,7 @@ Méthode :
 1. IDENTIFIER : nom, extension, numéro, rareté, époque. Le "nom" doit être copié EXACTEMENT tel qu'il est imprimé sur le recto, dans sa langue et son orthographe d'origine — jamais traduit ni francisé (une carte anglaise nommée "Charizard" reste "Charizard", pas "Dracaufeu" : un nom traduit rend le contrôle catalogue muet). Pour la langue, identifie la famille d'écriture du recto — c'est un repère visuel immédiat, sans ambiguïté : kana/kanji = japonais, sinogrammes = chinois (simplifié ou traditionnel), hangul = coréen, alphabet latin = langue européenne (français, anglais, allemand, espagnol, italien…).
 2. COHÉRENCE CATALOGUE : cette combinaison existe-t-elle réellement ? numéro vs total de l'extension, rareté vs numéro, illustrateur, ligne de copyright vs époque, holo vs époque, carte imprimée dans cette langue. Si une photo du dos est disponible, regarde s'il porte le dos exclusif japonais (bleu plus sombre et saturé, contour de balle épais, balle immobile, bordure grise) ou le dos international partagé par tout le reste du monde (bleu plus clair, contour fin, effet de tournoiement, bordure jaune) — le texte en arc aide aussi ("POCKET MONSTERS" ou "Pokémon" = japonais dans les deux cas, à condition que le reste du dessin soit bien japonais). Un dos japonais avec un recto écrit dans une autre écriture (ou l'inverse : dos international avec un recto en japonais) est une incohérence de catalogue à part entière — le dos ne distingue en revanche jamais le chinois, le coréen ou une langue européenne entre eux, seule l'écriture du recto le fait. Un élément inventé est rédhibitoire. (catégorie "reproductible" : conforme ne prouve rien, incohérent condamne)
 3. IMPRESSION : trame, bavures, halo autour des glyphes, niveau de noir — uniquement si la densité le permet. ("difficile")
-4. COLORIMÉTRIE : saturation et gamut cohérents avec l'époque de la carte — vérifiable sur une seule photo, quelle que soit sa résolution (voir remarque sur la lisibilité). Regarde en particulier, si le dos est visible, si le bleu du tourbillon est plausible : un bleu qui vire au cyan, au turquoise ou au néon, trop uniforme ou trop vif par rapport au bleu marine/pétrole habituel, est un signal réel — décris ce que tu vois plutôt que de conclure "non vérifiable" par défaut. ("difficile")
+4. COLORIMÉTRIE : saturation et gamut cohérents avec l'époque de la carte — vérifiable sur une seule photo, quelle que soit sa résolution (voir remarque sur la lisibilité). Regarde en particulier le dos : un bleu trop pâle/délavé, grisâtre, cyan/turquoise, néon, trop uniforme ou très différent du bleu riche attendu est un signal réel. Compare toujours cette dérive aux blancs de la Poké Ball dans LA MÊME image : si les blancs sont normaux alors que le bleu est radicalement faux, l'éclairage n'explique pas l'écart. Décris précisément la dérive et utilise "redhibitoire" lorsque l'écart est massif. ("difficile")
 5. SURFACE : holographie, texture, vernis, grain du carton. ("difficile")
 6. USURE : coins, tranches, rayures cohérents avec l'âge annoncé. Une carte présentée comme ancienne mais d'aspect neuf est suspecte ; une usure authentique est un signal positif réel. ("difficile")
 7. GÉOMÉTRIE : centrage, bordures, coupe — seulement si le biais est inférieur à 1.10. ("difficile")
@@ -1175,7 +1266,7 @@ Règles strictes :
 
 Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maximum. Chaînes limitées à 110 caractères, sauf "resume" et "observation" jusqu'à 280. Le "resume" tient en deux ou trois phrases :
 {"identification":{"carte":"","extension":"","numero":"","langue":"","edition_dos":"japonaise|internationale|non_visible","coherence":"coherent|incoherent|indetermine","note":""},
-"controles":[{"zone":"","critere":"","categorie":"reproductible|difficile|contextuel","observation":"","verdict":"conforme|suspect|non_verifiable"}],
+"controles":[{"zone":"","critere":"","categorie":"reproductible|difficile|contextuel","gravite":"faible|forte|redhibitoire","observation":"","verdict":"conforme|suspect|non_verifiable"}],
 "drapeaux":[""],"positifs":[""],
 "confiance":0,
 "resume":"","questions":[""]}`;
@@ -1234,6 +1325,7 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
         ...j, confiance: conf, confBrute, verdict, message, tokens,
         score: note.score,
         probantsVus: note.probantsVus,
+        redhibitoire: note.redhibitoire,
         plafonneFauteDeProbant: note.plafonneFauteDeProbant,
         avecReference: retenuesRef.length > 0,
       };
@@ -1612,6 +1704,14 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
                           <span className={`ap-cat ${c.categorie === "difficile" ? "probant" : ""}`}>
                             {c.categorie === "difficile" ? "probant" : c.categorie === "contextuel" ? "contexte" : "copiable"}
                           </span>
+                          {c.verdict === "suspect" && c.gravite && c.gravite !== "faible" && (
+                            <span className="ap-cat" style={{
+                              background: "color-mix(in srgb, var(--red) 14%, transparent)",
+                              color: "var(--red)",
+                            }}>
+                              {c.gravite === "redhibitoire" ? "rédhibitoire" : "anomalie forte"}
+                            </span>
+                          )}
                         </div>
                         <div className="ap-c-titre">{c.critere}</div>
                         <div className="ap-c-obs">{c.observation}</div>

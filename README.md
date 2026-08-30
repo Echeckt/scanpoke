@@ -28,3 +28,11 @@ reste disponible juste en dessous et fonctionne toujours.
 Chaque analyse consomme quelques centimes d'API. Sur un site public, ce sont
 des inconnus qui les dépensent. Pense à fixer une limite mensuelle dans la
 console Anthropic.
+
+## Correctif V1.1 — détection du dos
+
+- La balance des blancs n'utilise plus aveuglément le pourtour d'une photo colorée.
+- Un dos Pokémon centré est reconnu avant la logique « macro ».
+- Les mesures du bleu du dos (saturation, teinte, luminosité) sont transmises à l'analyse.
+- Les anomalies ont maintenant une gravité : faible, forte ou rédhibitoire.
+- Une contradiction rédhibitoire ne peut plus être compensée par des détails faciles à copier.
