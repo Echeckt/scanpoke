@@ -481,6 +481,11 @@ function mesurerImage(img) {
      étiqueter un dos évident comme "macro" avant même l'analyse IA. */
   let nCentreImage = 0, bleuCentreImage = 0, jauneCentreImage = 0;
   let nCoeurImage = 0, blancCoeurImage = 0;
+  // Histogrammes des pixels bleus du motif central. Ils servent à reconstruire
+  // une ROI du dos sans dépendre du détourage par luminance, souvent pollué
+  // par une main, un canapé ou une table colorée autour de la carte.
+  const histBleuX = new Uint32Array(w), histBleuY = new Uint32Array(h);
+  let totalBleuCentre = 0;
   const xCi0 = Math.floor(w * .18), xCi1 = Math.ceil(w * .82);
   const yCi0 = Math.floor(h * .14), yCi1 = Math.ceil(h * .86);
   const xCo0 = Math.floor(w * .32), xCo1 = Math.ceil(w * .68);
@@ -502,7 +507,10 @@ function mesurerImage(img) {
         if (teinte < 0) teinte += 360;
       }
       nCentreImage++;
-      if (teinte >= 190 && teinte <= 255 && sat > .22) bleuCentreImage++;
+      if (teinte >= 190 && teinte <= 255 && sat > .22) {
+        bleuCentreImage++;
+        histBleuX[x]++; histBleuY[y]++; totalBleuCentre++;
+      }
       if (teinte >= 38 && teinte <= 72 && sat > .30) jauneCentreImage++;
 
       if (x >= xCo0 && x < xCo1 && y >= yCo0 && y < yCo1) {
@@ -514,6 +522,55 @@ function mesurerImage(img) {
   const partBleuCentreImage = nCentreImage ? Math.round((bleuCentreImage / nCentreImage) * 1000) / 10 : 0;
   const partJauneCentreImage = nCentreImage ? Math.round((jauneCentreImage / nCentreImage) * 1000) / 10 : 0;
   const partBlancCoeurImage = nCoeurImage ? Math.round((blancCoeurImage / nCoeurImage) * 1000) / 10 : 0;
+
+  /* ROI spécifique au dos : on prend les quantiles du nuage bleu central puis
+     on l'élargit pour récupérer le logo jaune et la Poké Ball. Contrairement
+     au vieux bbox par luminance, cette ROI ne se fait pas contaminer par la
+     peau / le mobilier autour de la carte. */
+  let satBleuDos = 0, satJauneDos = 0, satRougeDos = 0, contrasteSatDosROI = 0, ratioBleuRefDos = 0, partBleuDos = 0;
+  if (totalBleuCentre > Math.max(120, nCentreImage * .025)) {
+    const quantileHist = (hist, q, total) => {
+      const cibleQ = total * q; let acc = 0;
+      for (let i = 0; i < hist.length; i++) { acc += hist[i]; if (acc >= cibleQ) return i; }
+      return hist.length - 1;
+    };
+    let bx0 = quantileHist(histBleuX, .015, totalBleuCentre);
+    let bx1 = quantileHist(histBleuX, .985, totalBleuCentre);
+    let by0 = quantileHist(histBleuY, .015, totalBleuCentre);
+    let by1 = quantileHist(histBleuY, .985, totalBleuCentre);
+    const ex = Math.max(8, Math.round((bx1 - bx0) * .10));
+    const ey = Math.max(8, Math.round((by1 - by0) * .10));
+    bx0 = Math.max(0, bx0 - ex); bx1 = Math.min(w - 1, bx1 + ex);
+    by0 = Math.max(0, by0 - ey); by1 = Math.min(h - 1, by1 + ey);
+
+    let sb = 0, nb2 = 0, sj = 0, nj2 = 0, sr = 0, nr2 = 0, nRoi = 0;
+    for (let y = by0; y <= by1; y++)
+      for (let x = bx0; x <= bx1; x++) {
+        const i = (y * w + x) * 4;
+        const r = Math.min(255, d[i] * kr), g = Math.min(255, d[i + 1] * kg), b = Math.min(255, d[i + 2] * kb);
+        const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+        if (mx < 12) continue;
+        const sat = (mx - mn) / mx, dl = mx - mn;
+        let teinte = 0;
+        if (dl > 0) {
+          if (mx === r) teinte = 60 * ((((g - b) / dl) % 6) + 6) % 360;
+          else if (mx === g) teinte = 60 * ((b - r) / dl + 2);
+          else teinte = 60 * ((r - g) / dl + 4);
+          if (teinte < 0) teinte += 360;
+        }
+        nRoi++;
+        if (teinte >= 190 && teinte <= 255 && sat > .22) { sb += sat; nb2++; }
+        if (teinte >= 35 && teinte <= 75 && sat > .30) { sj += sat; nj2++; }
+        if ((teinte < 25 || teinte > 335) && sat > .35) { sr += sat; nr2++; }
+      }
+    satBleuDos = nb2 ? Math.round((sb / nb2) * 1000) / 10 : 0;
+    satJauneDos = nj2 ? Math.round((sj / nj2) * 1000) / 10 : 0;
+    satRougeDos = nr2 ? Math.round((sr / nr2) * 1000) / 10 : 0;
+    const refDos = Math.max(satJauneDos, satRougeDos);
+    contrasteSatDosROI = Math.round((refDos - satBleuDos) * 10) / 10;
+    ratioBleuRefDos = refDos > 0 ? Math.round((satBleuDos / refDos) * 1000) / 1000 : 0;
+    partBleuDos = nRoi ? Math.round((nb2 / nRoi) * 1000) / 10 : 0;
+  }
 
   /* ── géométrie ─────────────────────────────────────────────────
      Une photo prise de biais rend le centrage, l'épaisseur de bordure
@@ -535,6 +592,7 @@ function mesurerImage(img) {
     periodicite, pasTrame: lagPic, satMoy, satP90, partVive, biais, ratio,
     partBleu, partJaune, rougeCentre, jauneBord, bruitTeinteCentre, satBleu, satJaune, satRougeCentre, contrasteSatDos, teinteBleu, lumBleu,
     partBleuCentreImage, partJauneCentreImage, partBlancCoeurImage,
+    satBleuDos, satJauneDos, satRougeDos, contrasteSatDosROI, ratioBleuRefDos, partBleuDos,
     balanceCouleur: balanceFiable ? "fond_neutre" : "brute", ratioFond: Math.round(ratioFond * 100) / 100,
   };
 }
@@ -801,47 +859,60 @@ function controlesDosDeterministes(photos) {
   const controles = [];
 
   for (const p of Array.isArray(photos) ? photos : []) {
-    if (p?.role !== "verso") continue;
-    const m = p.m || {};
-    const bleuPresent = Math.max(Number(m.partBleu || 0), Number(m.partBleuCentreImage || 0)) >= 18;
+    const m = p?.m || {};
+    // Double sécurité : même si le rôle a été mal choisi dans l'UI, la signature
+    // visuelle Poké Ball + grand champ bleu permet encore d'activer le garde-fou.
+    const signatureDos = (Number(m.partBleuCentreImage || 0) >= 18 && Number(m.partBlancCoeurImage || 0) >= 4);
+    if (p?.role !== "verso" && !signatureDos) continue;
+
+    const bleuPresent = Math.max(Number(m.partBleu || 0), Number(m.partBleuCentreImage || 0), Number(m.partBleuDos || 0)) >= 18;
     const blancPresent = Number(m.partBlancCoeurImage || 0) >= 4;
-    const satBleu = Number(m.satBleu || 0);
-    const satJaune = Number(m.satJaune || 0);
-    const satRouge = Number(m.satRougeCentre || 0);
+
+    // Priorité aux mesures de la ROI reconstruite à partir du motif bleu. Elles
+    // excluent beaucoup mieux le fond chaud que l'ancien bbox global.
+    const satBleu = Number(m.satBleuDos || m.satBleu || 0);
+    const satJaune = Number(m.satJauneDos || m.satJaune || 0);
+    const satRouge = Number(m.satRougeDos || m.satRougeCentre || 0);
     const ref = Math.max(satJaune, satRouge);
-    const ecart = Number.isFinite(Number(m.contrasteSatDos))
+    const ecart = Number(m.contrasteSatDosROI || 0) || (Number.isFinite(Number(m.contrasteSatDos))
       ? Number(m.contrasteSatDos)
-      : Math.round((ref - satBleu) * 10) / 10;
+      : Math.round((ref - satBleu) * 10) / 10);
+    const ratio = Number(m.ratioBleuRefDos || 0) || (ref > 0 ? satBleu / ref : 0);
 
     if (!bleuPresent || !blancPresent || satBleu <= 0 || ref <= 0) continue;
 
-    // Cas extrêmement parlant : le bleu s'effondre alors que les encres
-    // rouge/jaune de LA MÊME photo restent vives. Sur le Rayquaza test,
-    // on est autour de 43 % de bleu contre ~70 %+ pour les repères.
-    if (satBleu <= 46 && ref >= 62 && ecart >= 20) {
+    /* Un faux délavé peut garder exactement le bon dessin. Le signal robuste est
+       relatif : dans LA MÊME photo, les encres jaune/rouge restent franches alors
+       que le bleu s'effondre. Le Rayquaza de régression est ~42-43 % de bleu pour
+       ~70 %+ dans la ROI du dos. L'ancien seuil regardait une référence contaminée
+       par la main et obtenait ~59,8 %, ratant la règle de 0,2 point. */
+    const effondrementFranc = satBleu <= 47 && ref >= 57 && ecart >= 14 && ratio <= .78;
+    const effondrementMassif = satBleu <= 50 && ref >= 64 && ecart >= 20 && ratio <= .76;
+
+    if (effondrementFranc || effondrementMassif) {
       controles.push({
         zone: "Dos",
         critere: "Colorimétrie relative du bleu",
         categorie: "difficile",
         gravite: "redhibitoire",
-        observation: `Bleu ${satBleu}% contre ${Math.round(ref * 10) / 10}% sur rouge/jaune (écart ${Math.round(ecart * 10) / 10} pts), avec blanc central encore neutre. Le défaut n'est pas expliqué par une simple dominante globale.`,
+        observation: `Bleu ${satBleu}% contre ${Math.round(ref * 10) / 10}% sur rouge/jaune dans la zone du dos (écart ${Math.round(ecart * 10) / 10} pts, ratio ${Math.round(ratio * 100)}%). Les blancs centraux restent plausibles : le bleu est anormalement délavé relativement aux autres encres de la même photo.`,
         verdict: "suspect",
-        source: "mesure_locale",
+        source: "mesure_locale_roi",
       });
       continue;
     }
 
-    // Zone d'alerte : on condamne moins fort, mais on empêche un résultat
-    // rassurant tant qu'une meilleure photo du dos n'a pas été fournie.
-    if (satBleu <= 52 && ref >= 60 && ecart >= 15) {
+    // Zone d'alerte : empêche un verdict rassurant sans sur-condamner les photos
+    // fortement compressées ou éclairées de manière atypique.
+    if (satBleu <= 54 && ref >= 55 && ecart >= 10 && ratio <= .84) {
       controles.push({
         zone: "Dos",
         critere: "Colorimétrie relative du bleu",
         categorie: "difficile",
         gravite: "forte",
-        observation: `Bleu ${satBleu}% nettement moins saturé que les repères rouge/jaune (${Math.round(ref * 10) / 10}%, écart ${Math.round(ecart * 10) / 10} pts). Une meilleure photo du dos est requise.`,
+        observation: `Bleu ${satBleu}% sensiblement moins saturé que les repères rouge/jaune (${Math.round(ref * 10) / 10}%, écart ${Math.round(ecart * 10) / 10} pts, ratio ${Math.round(ratio * 100)}%). Une meilleure photo du dos est requise.`,
         verdict: "suspect",
-        source: "mesure_locale",
+        source: "mesure_locale_roi",
       });
     }
   }
@@ -1269,7 +1340,7 @@ export default function Scanner() {
           ? ` | suggestion automatique d'édition du dos (à vérifier toi-même sur l'image, pas un fait acquis) : ${p.edition}`
           : "";
         const mesureDos = p.role === "verso"
-          ? ` | bleu détecté ${p.m.partBleu ?? 0}% (centre photo ${p.m.partBleuCentreImage ?? 0}%) | saturation bleu ${p.m.satBleu ?? 0}% | saturation jaune ${p.m.satJaune ?? 0}% | saturation rouge Poké Ball ${p.m.satRougeCentre ?? 0}% | écart saturation interne ${p.m.contrasteSatDos ?? 0} pts | teinte bleu ${p.m.teinteBleu ?? 0}° | luminosité bleu ${p.m.lumBleu ?? 0}% | balance couleur ${p.m.balanceCouleur || "brute"}`
+          ? ` | bleu détecté ${p.m.partBleu ?? 0}% (centre photo ${p.m.partBleuCentreImage ?? 0}%) | saturation bleu globale ${p.m.satBleu ?? 0}% | ROI dos: bleu ${p.m.satBleuDos ?? 0}%, jaune ${p.m.satJauneDos ?? 0}%, rouge ${p.m.satRougeDos ?? 0}%, écart ${p.m.contrasteSatDosROI ?? 0} pts, ratio bleu/réf ${p.m.ratioBleuRefDos ?? 0} | teinte bleu ${p.m.teinteBleu ?? 0}° | luminosité bleu ${p.m.lumBleu ?? 0}% | balance couleur ${p.m.balanceCouleur || "brute"}`
           : "";
         return `${prefixe} ${i + 1} — rôle: ${p.role} | natif ${p.m.natif} | densité ${p.m.pxParMm} px/mm | netteté ${p.m.nettete}/100 | biais perspective ${p.m.biais || "n/d"} | reflets ${p.m.reflets}% | saturation moyenne ${p.m.satMoy}% (p90 ${p.m.satP90}%, part très vive ${p.m.partVive}%) | artefacts JPEG ${p.m.blocs} | périodicité ${p.m.periodicite} (pas ${p.m.pasTrame}px)${mesureDos}${indiceDos}`;
       };

@@ -42,3 +42,9 @@ console Anthropic.
 - Mesure relative bleu vs rouge Poké Ball / jaune du logo dans la même photo.
 - Si le bleu est très faible alors que rouge/jaune restent francs et que le blanc central reste neutre, un contrôle local rédhibitoire est injecté.
 - Une anomalie locale rédhibitoire force le score d'authenticité à 0/100 et un plancher de confiance de 92% pour ce défaut précis.
+
+## v1.3 — ROI du dos + seuil relatif robuste
+- Le bleu du dos est maintenant mesuré dans une zone reconstruite à partir du motif bleu lui-même, au lieu d'un détourage global pollué par la main ou le décor.
+- Le garde-fou compare le bleu aux encres jaune/rouge dans cette même zone et utilise aussi le ratio bleu/référence.
+- Le cas de régression Rayquaza (bleu ~42–43 % alors que les autres encres restent nettement plus saturées) déclenche désormais une anomalie rédhibitoire.
+- Le garde-fou peut reconnaître un dos par sa signature visuelle même si son rôle a été mal sélectionné dans l'interface.
