@@ -2,50 +2,54 @@ import React, { useState, useRef, useCallback, useMemo, useEffect } from "react"
 
 /* ────────────────────────────────────────────────────────────────
    CONTRÔLE D'AUTHENTICITÉ — cartes Pokémon TCG
-   Langage visuel : Human Interface Guidelines.
-   SF Pro, gris de fond #F5F5F7, cartes flottantes à angles continus,
-   anneaux de progression, interrupteurs iOS, mode sombre système.
+   Langage visuel : cabinet d'expertise plutôt que HIG grand public —
+   obsidienne, or de certificat, rouge Poké Ball en accent de marque,
+   Fraunces en display pour les verdicts, SF Pro pour l'interface.
+   Un seul écran doit tenir sans scroll sur un ordinateur portable :
+   la place gagnée sur le héros va aux pièces et au rapport.
    ──────────────────────────────────────────────────────────────── */
 
 const CSS = `
 .ap{
-  --bg:#F5F5F7; --surface:#FFFFFF; --surface2:#F5F5F7; --fill:rgba(120,120,128,.12);
-  --label:#1D1D1F; --label2:#6E6E73; --label3:#86868B;
-  --sep:rgba(0,0,0,.08); --sep-fort:rgba(0,0,0,.14);
-  --blue:#0071E3; --green:#34C759; --orange:#FF9500; --red:#FF3B30;
+  --bg:#0B0A0C; --surface:#151417; --surface2:#1B1A1E; --fill:rgba(255,255,255,.06);
+  --label:#F3F1EC; --label2:#A6A3AA; --label3:#726F78;
+  --sep:rgba(255,255,255,.08); --sep-fort:rgba(255,255,255,.16);
+  --blue:#E4B84B; --green:#34C77A; --orange:#F2A93B; --red:#F0454F;
+  --marque:#E5484D; --marque-onde:rgba(229,72,77,.16);
   --r-l:20px; --r-m:14px; --r-s:10px;
-  --ombre:0 4px 20px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
+  --ombre:0 24px 60px -24px rgba(0,0,0,.65), 0 1px 0 rgba(255,255,255,.04) inset;
   --ressort:cubic-bezier(.16,1,.3,1);
+  --affiche:"Fraunces","Iowan Old Style","Palatino Linotype",Georgia,serif;
 
   font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
-  background:var(--bg); color:var(--label); min-height:100%;
-  padding:0 0 80px; letter-spacing:-.01em;
+  background:
+    radial-gradient(900px 480px at 12% -8%, var(--marque-onde), transparent 60%),
+    radial-gradient(760px 420px at 100% 0%, rgba(228,184,75,.13), transparent 55%),
+    var(--bg);
+  color:var(--label); min-height:100%;
+  padding:0 0 52px; letter-spacing:-.01em;
   -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
-}
-@media (prefers-color-scheme:dark){
-  .ap{
-    --bg:#000; --surface:#1C1C1E; --surface2:#2C2C2E; --fill:rgba(120,120,128,.24);
-    --label:#F5F5F7; --label2:#98989D; --label3:#6E6E73;
-    --sep:rgba(255,255,255,.10); --sep-fort:rgba(255,255,255,.18);
-    --blue:#0A84FF; --green:#30D158; --orange:#FF9F0A; --red:#FF453A;
-    --ombre:0 4px 24px rgba(0,0,0,.5);
-  }
 }
 .ap *{ box-sizing:border-box; }
 .ap-mono{ font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums; }
 
-/* ─ héros ─ */
-.ap-hero{ text-align:center; padding:76px 24px 44px; max-width:720px; margin:0 auto; }
-.ap-eyebrow{ font-size:19px; font-weight:600; color:var(--blue); letter-spacing:-.01em; margin-bottom:8px; }
-.ap-h1{ font-size:clamp(38px,7vw,58px); font-weight:700; letter-spacing:-.03em;
-  line-height:1.06; margin:0 0 18px; }
-.ap-lead{ font-size:clamp(17px,2.4vw,21px); line-height:1.45; color:var(--label2);
-  margin:0 auto; max-width:34em; font-weight:400; }
+/* ─ en-tête compact ─ */
+.ap-entete{ position:sticky; top:0; z-index:30; backdrop-filter:blur(20px) saturate(160%);
+  -webkit-backdrop-filter:blur(20px) saturate(160%);
+  background:rgba(11,10,12,.74); border-bottom:1px solid var(--sep); }
+.ap-entete-haut{ max-width:1080px; margin:0 auto; padding:13px 24px; display:flex;
+  align-items:center; gap:22px; flex-wrap:wrap; }
+.ap-marque{ display:flex; align-items:center; gap:11px; flex:none; }
+.ap-marque-txt{ display:flex; flex-direction:column; line-height:1.18; }
+.ap-marque-nom{ font-family:var(--affiche); font-size:17px; font-weight:600; letter-spacing:-.01em; }
+.ap-marque-sub{ font-size:11.5px; color:var(--label3); letter-spacing:.02em; text-transform:uppercase; margin-top:1px; }
+.ap-tagline{ max-width:1080px; margin:0 auto; padding:10px 24px 0;
+  font-size:13.5px; color:var(--label3); line-height:1.5; }
 
 /* ─ barre de recherche ─ */
-.ap-recherche{ display:flex; gap:10px; max-width:600px; margin:34px auto 0; }
-.ap-recherche .ap-input{ flex:1; min-width:0; height:50px; font-size:17px;
-  border-radius:980px; padding:0 20px; text-align:left; }
+.ap-recherche{ display:flex; gap:9px; flex:1; min-width:260px; max-width:560px; margin:0 0 0 auto; }
+.ap-recherche .ap-input{ flex:1; min-width:0; height:42px; font-size:15px;
+  border-radius:980px; padding:0 18px; text-align:left; }
 
 /* ─ contrôles de base ─ */
 .ap-input,.ap-zone{
@@ -71,6 +75,7 @@ const CSS = `
 .ap-btn:disabled{ opacity:.35; cursor:not-allowed; }
 .ap-btn.pleine{ width:100%; }
 .ap-btn.discret{ background:var(--fill); color:var(--blue); height:38px; font-size:15px; padding:0 16px; }
+.ap-recherche .ap-btn{ height:42px; font-size:14.5px; padding:0 20px; flex:none; }
 
 /* ─ menu déroulant façon macOS ─ */
 .ap-menu{
@@ -95,17 +100,17 @@ const CSS = `
 .ap-switch input:checked ~ .ap-pastille{ transform:translateX(20px); }
 
 /* ─ grille ─ */
-.ap-grille{ max-width:1080px; margin:0 auto; padding:0 24px;
-  display:grid; grid-template-columns:minmax(0,1fr); gap:22px; }
-@media (min-width:940px){ .ap-grille{ grid-template-columns:396px minmax(0,1fr); gap:26px; align-items:start; } }
+.ap-grille{ max-width:1080px; margin:0 auto; padding:16px 24px 0;
+  display:grid; grid-template-columns:minmax(0,1fr); gap:16px; }
+@media (min-width:940px){ .ap-grille{ grid-template-columns:376px minmax(0,1fr); gap:18px; align-items:start; } }
 
 /* ─ carte ─ */
-.ap-carte{ background:var(--surface); border-radius:var(--r-l); box-shadow:var(--ombre); overflow:hidden;
-  animation:apparait .55s var(--ressort) both; }
-@keyframes apparait{ from{ opacity:0; transform:translateY(10px); } to{ opacity:1; transform:none; } }
-.ap-carte-corps{ padding:22px; }
-.ap-titre-sec{ font-size:13px; font-weight:600; letter-spacing:.02em; text-transform:uppercase;
-  color:var(--label3); margin:0 0 12px; }
+.ap-carte{ background:var(--surface); border:1px solid var(--sep); border-radius:var(--r-l);
+  box-shadow:var(--ombre); overflow:hidden; animation:apparait .5s var(--ressort) both; }
+@keyframes apparait{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:none; } }
+.ap-carte-corps{ padding:18px; }
+.ap-titre-sec{ font-size:12px; font-weight:600; letter-spacing:.03em; text-transform:uppercase;
+  color:var(--label3); margin:0 0 10px; }
 
 /* ─ dépôt ─ */
 .ap-depot{ width:100%; border:1.5px dashed var(--sep-fort); border-radius:var(--r-m);
@@ -134,13 +139,13 @@ const CSS = `
 .ap-lbl{ display:block; font-size:13px; font-weight:500; color:var(--label2); margin-bottom:6px; }
 
 /* ─ ligne réglage ─ */
-.ap-reglage{ display:flex; align-items:center; gap:14px; margin-top:20px;
-  padding:14px; background:var(--surface2); border-radius:var(--r-m); }
+.ap-reglage{ display:flex; align-items:center; gap:14px; margin-top:14px;
+  padding:12px 14px; background:var(--surface2); border-radius:var(--r-m); }
 .ap-reglage-t{ font-size:15px; font-weight:500; }
 .ap-reglage-s{ font-size:13px; color:var(--label3); line-height:1.4; margin-top:2px; }
 
 /* ─ jauge ─ */
-.ap-jauge{ margin-top:18px; }
+.ap-jauge{ margin-top:14px; }
 .ap-jauge-l{ display:flex; justify-content:space-between; font-size:13px; color:var(--label2); margin-bottom:7px; }
 .ap-piste-j{ height:6px; background:var(--fill); border-radius:980px; overflow:hidden; }
 .ap-piste-j i{ display:block; height:100%; border-radius:980px; transition:width .8s var(--ressort); }
@@ -155,12 +160,12 @@ const CSS = `
 .ap-etape.faite .ap-pastille-e{ background:var(--green); color:#fff; }
 
 /* ─ verdict ─ */
-.ap-verdict{ display:flex; gap:26px; align-items:center; flex-wrap:wrap; padding:26px 22px; }
+.ap-verdict{ display:flex; gap:20px; align-items:center; flex-wrap:wrap; padding:20px 18px; }
 .ap-verdict-txt{ flex:1; min-width:200px; }
-.ap-badge{ display:inline-block; font-size:13px; font-weight:600; padding:4px 11px;
-  border-radius:980px; margin-bottom:10px; }
-.ap-v-titre{ font-size:26px; font-weight:700; letter-spacing:-.025em; line-height:1.14; margin:0; }
-.ap-v-sous{ font-size:16px; line-height:1.47; color:var(--label2); margin:9px 0 0; }
+.ap-badge{ display:inline-block; font-size:12.5px; font-weight:600; padding:4px 11px;
+  border-radius:980px; margin-bottom:9px; }
+.ap-v-titre{ font-family:var(--affiche); font-size:25px; font-weight:600; letter-spacing:-.015em; line-height:1.16; margin:0; }
+.ap-v-sous{ font-size:15px; line-height:1.47; color:var(--label2); margin:8px 0 0; }
 
 /* ─ constats ─ */
 .ap-constat{ display:flex; gap:12px; padding:14px 0; }
@@ -180,11 +185,11 @@ const CSS = `
 .ap-alerte{ background:color-mix(in srgb,var(--red) 10%,transparent); border-radius:var(--r-m);
   padding:15px; font-size:15px; line-height:1.47; color:var(--label); }
 
-.ap-vide{ text-align:center; padding:60px 22px; }
-.ap-vide-t{ font-size:18px; font-weight:600; margin-top:14px; }
-.ap-vide-s{ font-size:15px; color:var(--label3); margin-top:6px; line-height:1.47; }
+.ap-vide{ text-align:center; padding:40px 22px; }
+.ap-vide-t{ font-size:17px; font-weight:600; margin-top:12px; }
+.ap-vide-s{ font-size:14px; color:var(--label3); margin-top:5px; line-height:1.47; }
 
-.ap-pied{ max-width:1080px; margin:34px auto 0; padding:0 24px; font-size:13px;
+.ap-pied{ max-width:1080px; margin:22px auto 0; padding:0 24px; font-size:12.5px;
   line-height:1.5; color:var(--label3); text-align:center; }
 
 /* ─ calibration ─ */
@@ -217,14 +222,14 @@ const CSS = `
 .ap-cat.probant{ background:color-mix(in srgb,var(--blue) 15%,transparent); color:var(--blue); }
 
 /* ─ avertissement doublon ─ */
-.ap-avert{ max-width:600px; margin:14px auto 0; display:flex; gap:12px; align-items:center;
+.ap-avert{ max-width:1080px; margin:0 auto; display:flex; gap:12px; align-items:center;
   background:color-mix(in srgb,var(--orange) 13%,transparent); border-radius:var(--r-m);
-  padding:13px 16px; text-align:left; animation:apparait .4s var(--ressort) both; }
-.ap-avert-t{ font-size:15px; line-height:1.4; flex:1; }
+  padding:11px 16px; text-align:left; animation:apparait .4s var(--ressort) both; }
+.ap-avert-t{ font-size:14px; line-height:1.4; flex:1; }
 
 /* ─ historique ─ */
-.ap-hist{ max-width:1080px; margin:22px auto 0; padding:0 24px; }
-.ap-hist-tete{ display:flex; align-items:baseline; justify-content:space-between; gap:14px; margin-bottom:12px; }
+.ap-hist{ max-width:1080px; margin:16px auto 0; padding:0 24px; }
+.ap-hist-tete{ display:flex; align-items:baseline; justify-content:space-between; gap:14px; margin-bottom:10px; }
 .ap-hist-rang{ display:flex; gap:13px; padding:11px 13px; align-items:center; cursor:pointer;
   border:none; background:none; width:100%; text-align:left; font-family:inherit; color:inherit;
   transition:background .16s; }
@@ -825,6 +830,24 @@ const Alerte = ({ c = "currentColor" }) => (
   </svg>
 );
 
+/* Marque maison : une sphère à bande abstraite, clin d'œil générique au
+   jeu de cartes sans reprendre le logo déposé de l'éditeur. */
+const LogoMarque = () => (
+  <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true" style={{ flex: "none" }}>
+    <defs>
+      <linearGradient id="lm-haut" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stopColor="#F0666B" />
+        <stop offset="1" stopColor="var(--marque)" />
+      </linearGradient>
+    </defs>
+    <circle cx="15" cy="15" r="12.5" fill="#EDEAE2" />
+    <path d="M2.5 15a12.5 12.5 0 0 1 25 0z" fill="url(#lm-haut)" />
+    <rect x="2.5" y="13.9" width="25" height="2.2" fill="#17161A" />
+    <circle cx="15" cy="15" r="4.3" fill="#17161A" />
+    <circle cx="15" cy="15" r="2.4" fill="#EDEAE2" />
+  </svg>
+);
+
 /* ── anneaux de progression ── */
 function Anneaux({ score, confiance, teinte }) {
   const [anime, setAnime] = useState(false);
@@ -843,11 +866,11 @@ function Anneaux({ score, confiance, teinte }) {
                 strokeDasharray={C2} strokeDashoffset={anime ? C2 * (1 - confiance / 100) : C2}
                 style={{ transition: "stroke-dashoffset 1.05s cubic-bezier(.16,1,.3,1) .12s" }} />
       </g>
-      <text x="88" y="86" textAnchor="middle" fontSize="40" fontWeight="700"
-            fill="var(--label)" letterSpacing="-1.6"
-            fontFamily="-apple-system,BlinkMacSystemFont,sans-serif">{score}</text>
-      <text x="88" y="106" textAnchor="middle" fontSize="13" fill="var(--label3)"
-            fontFamily="-apple-system,BlinkMacSystemFont,sans-serif">confiance {confiance} %</text>
+      <text x="88" y="87" textAnchor="middle" fontSize="42" fontWeight="600"
+            fill="var(--label)" letterSpacing="-1"
+            style={{ fontFamily: "var(--affiche), -apple-system, sans-serif" }}>{score}</text>
+      <text x="88" y="106" textAnchor="middle" fontSize="12.5" fill="var(--label3)"
+            fontFamily="-apple-system,BlinkMacSystemFont,sans-serif" letterSpacing=".01em">confiance {confiance} %</text>
     </svg>
   );
 }
@@ -1169,30 +1192,35 @@ Réponds UNIQUEMENT par ce JSON, sans préambule ni markdown. 8 contrôles maxim
     <div className="ap">
       <style>{CSS}</style>
 
-      <header className="ap-hero">
-        <div className="ap-eyebrow">Contrôle d'authenticité</div>
-        <h1 className="ap-h1">Faux ou authentique.<br />Vous saurez avant d'acheter.</h1>
-        <p className="ap-lead">
-          Collez le lien d'une annonce Vinted. Le contrôle mesure d'abord ce que les photos
-          permettent réellement d'affirmer, puis confronte la carte au catalogue officiel.
-        </p>
-        <div className="ap-recherche">
-          <input className="ap-input" placeholder="vinted.fr/items/…" value={annonce.url}
-                 aria-label="Lien de l'annonce Vinted"
-                 onChange={(e) => setAnnonce({ ...annonce, url: e.target.value })}
-                 onKeyDown={(e) => e.key === "Enter" && recupererAnnonce()} />
-          <button className="ap-btn" onClick={recupererAnnonce} disabled={collecte || !annonce.url.trim()}>
-            {collecte ? "Lecture…" : "Lire l'annonce"}
-          </button>
+      <header className="ap-entete">
+        <div className="ap-entete-haut">
+          <div className="ap-marque">
+            <LogoMarque />
+            <div className="ap-marque-txt">
+              <span className="ap-marque-nom">Faux ou authentique</span>
+              <span className="ap-marque-sub">Cartes Pokémon TCG</span>
+            </div>
+          </div>
+          <div className="ap-recherche">
+            <input className="ap-input" placeholder="vinted.fr/items/…" value={annonce.url}
+                   aria-label="Lien de l'annonce Vinted"
+                   onChange={(e) => setAnnonce({ ...annonce, url: e.target.value })}
+                   onKeyDown={(e) => e.key === "Enter" && recupererAnnonce()} />
+            <button className="ap-btn" onClick={recupererAnnonce} disabled={collecte || !annonce.url.trim()}>
+              {collecte ? "Lecture…" : "Lire l'annonce"}
+            </button>
+          </div>
         </div>
 
         {dejaVue && (
-          <div className="ap-avert">
-            <Alerte c="var(--orange)" />
-            <span className="ap-avert-t">
-              Déjà analysée le {dateCourte(dejaVue.date)}. Relancer consommera de nouveaux crédits.
-            </span>
-            <button className="ap-btn discret" onClick={() => rouvrir(dejaVue)}>Voir le rapport</button>
+          <div className="ap-tagline" style={{ paddingTop: 0, paddingBottom: 12 }}>
+            <div className="ap-avert">
+              <Alerte c="var(--orange)" />
+              <span className="ap-avert-t">
+                Déjà analysée le {dateCourte(dejaVue.date)}. Relancer consommera de nouveaux crédits.
+              </span>
+              <button className="ap-btn discret" onClick={() => rouvrir(dejaVue)}>Voir le rapport</button>
+            </div>
           </div>
         )}
       </header>
